@@ -1,0 +1,4789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Imaginarium · CAD Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!--
+  occt-import-js loads OpenCascade's import functionality as WebAssembly.
+  Used ONLY when the user uploads a STEP/STP/IGES file. The 10MB WASM
+  blob is fetched lazily on first use, not on page load.
+  License: LGPL-2.1
+-->
+<script src="https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+
+  /* ====================================================================
+     PASSWORD GATE
+     A full-viewport overlay shown on initial load. Hidden once the user
+     enters the correct access code. Only meaningful as a "casual visitor"
+     barrier — see the comment in the gate JS for the security caveat.
+     ==================================================================== */
+  .gate {
+    position: fixed; inset: 0;
+    z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 30%, #15151a 0%, #0A0A0B 65%);
+    color: #F4F5F7;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    padding: 20px;
+    transition: opacity 0.32s cubic-bezier(.32,.72,.18,1), visibility 0.32s;
+  }
+  .gate.gate-unlocked { opacity: 0; visibility: hidden; pointer-events: none; }
+
+  .gate-card {
+    width: 100%; max-width: 360px;
+    background: rgba(20, 20, 24, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 32px 28px 24px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(0, 102, 255, 0.1);
+    text-align: center;
+  }
+  .gate-card.shake {
+    animation: gate-shake 0.42s cubic-bezier(.36,.07,.19,.97);
+  }
+  @keyframes gate-shake {
+    10%, 90% { transform: translateX(-2px); }
+    20%, 80% { transform: translateX(4px); }
+    30%, 50%, 70% { transform: translateX(-7px); }
+    40%, 60% { transform: translateX(7px); }
+  }
+
+  .gate-logo {
+    width: 44px; height: 44px;
+    border-radius: 11px;
+    background: #0066FF;
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 16px;
+    box-shadow: 0 0 30px rgba(0, 102, 255, 0.45);
+  }
+  .gate-title {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin-bottom: 6px;
+  }
+  .gate-sub {
+    font-size: 12.5px;
+    color: rgba(244,245,247,0.55);
+    margin-bottom: 22px;
+  }
+
+  .gate-form { display: flex; flex-direction: column; gap: 10px; }
+
+  .gate-input {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    color: #F4F5F7;
+    font-family: inherit;
+    font-size: 16px;     /* 16px prevents iOS auto-zoom on focus */
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-align: center;
+    padding: 13px 14px;
+    outline: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .gate-input::placeholder {
+    color: rgba(244,245,247,0.35);
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+  .gate-input:focus {
+    border-color: #0066FF;
+    background: rgba(0,102,255,0.06);
+  }
+
+  .gate-error {
+    font-size: 11.5px;
+    color: #FF6B5B;
+    opacity: 0;
+    transform: translateY(-2px);
+    transition: opacity 0.18s, transform 0.18s;
+    min-height: 14px;
+    margin-top: -2px;
+  }
+  .gate-error.show { opacity: 1; transform: translateY(0); }
+
+  .gate-btn {
+    background: #0066FF; color: white;
+    border: none; border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13.5px; font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 102, 255, 0.32);
+    transition: filter 0.12s, transform 0.06s;
+    margin-top: 2px;
+  }
+  .gate-btn:hover { filter: brightness(1.08); }
+  .gate-btn:active { transform: translateY(1px); }
+
+  .gate-foot {
+    font-size: 10.5px;
+    color: rgba(244,245,247,0.4);
+    margin-top: 22px;
+    letter-spacing: 0.02em;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    background: #0A0A0B;
+    color: #F4F5F7;
+    letter-spacing: -0.01em;
+    user-select: none;
+  }
+  :root {
+    --blue: #0066FF;
+    --blue-glow: rgba(0, 102, 255, 0.18);
+    --blue-line: rgba(0, 102, 255, 0.6);
+    --border: rgba(255, 255, 255, 0.08);
+    --text: #F4F5F7;
+    --text-dim: #8A8E96;
+    --surface: #0A0A0B;
+    --panel: rgba(20, 21, 24, 0.72);
+    --panel-light: rgba(15, 15, 17, 0.92);
+    --hover: rgba(255, 255, 255, 0.06);
+    --input-bg: rgba(255, 255, 255, 0.05);
+  }
+  body.light {
+    --border: rgba(0, 0, 0, 0.06);
+    --text: #16171A;
+    --text-dim: #5A5E66;
+    --surface: #FAFAFA;
+    --panel: rgba(255, 255, 255, 0.92);
+    --panel-light: rgba(255, 255, 255, 0.92);
+    --hover: rgba(0, 0, 0, 0.04);
+    --input-bg: rgba(0, 0, 0, 0.04);
+    background: #F4F5F7;
+    color: #16171A;
+  }
+  #app { width: 100vw; height: 100vh; display: flex; flex-direction: column; background: var(--surface); color: var(--text); }
+
+  /* Top bar */
+  .topbar {
+    height: 52px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 18px;
+    background: var(--panel-light);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    z-index: 10;
+    flex-shrink: 0;
+  }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: var(--blue);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 18px var(--blue-glow);
+    color: white;
+  }
+  .brand-text .name { font-weight: 700; font-size: 13px; letter-spacing: 0.03em; }
+  .brand-text .sub { font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.08em; }
+  .part-meta { display: flex; align-items: center; gap: 14px; }
+  .divider-v { width: 1px; height: 22px; background: var(--border); }
+  .part-input {
+    background: transparent; border: none;
+    color: var(--text); font-size: 13px; font-weight: 500;
+    outline: none; min-width: 100px; font-family: inherit;
+  }
+  .part-label { font-size: 12px; color: var(--text-dim); }
+  .top-controls { display: flex; align-items: center; gap: 8px; }
+
+  /* Upload button */
+  .upload-btn {
+    background: var(--blue); color: white;
+    border: none; border-radius: 7px;
+    padding: 6px 12px;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+    display: flex; align-items: center; gap: 6px;
+    box-shadow: 0 2px 8px var(--blue-glow);
+    transition: filter 0.12s;
+  }
+  .upload-btn:hover { filter: brightness(1.1); }
+
+  /* Parts dropdown */
+  .parts-dropdown { position: relative; }
+  .parts-trigger {
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 5px 10px;
+    font-size: 12px; font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+    max-width: 220px;
+    transition: background 0.12s;
+  }
+  .parts-trigger:hover { background: var(--hover); }
+  .parts-label {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 180px;
+  }
+  .parts-menu {
+    position: absolute; top: calc(100% + 6px); right: 0;
+    background: var(--panel);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 4px;
+    min-width: 260px;
+    max-height: 400px; overflow-y: auto;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.32);
+    z-index: 50;
+    display: none;
+  }
+  .parts-menu.open { display: block; }
+  .parts-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.1s;
+    position: relative;
+  }
+  .parts-item:hover { background: var(--hover); }
+  .parts-item.active { background: rgba(0, 102, 255, 0.15); }
+  .parts-item.active .parts-name { color: var(--blue); }
+  .parts-item-swatch {
+    width: 10px; height: 10px; border-radius: 50%;
+    flex-shrink: 0;
+    border: 1.5px solid rgba(255,255,255,0.25);
+  }
+  .parts-item-body { flex: 1; min-width: 0; }
+  .parts-name {
+    font-size: 12px; font-weight: 500; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .parts-meta {
+    font-size: 10px; color: var(--text-dim); margin-top: 1px;
+  }
+  .parts-delete {
+    background: transparent; border: none; cursor: pointer;
+    color: var(--text-dim); padding: 4px;
+    border-radius: 4px; flex-shrink: 0;
+    display: flex; align-items: center;
+    transition: all 0.1s;
+  }
+  .parts-delete:hover {
+    color: #FF3B30;
+    background: rgba(255, 59, 48, 0.12);
+  }
+  .parts-menu-empty {
+    padding: 14px; text-align: center;
+    font-size: 11px; color: var(--text-dim);
+  }
+  .parts-menu-actions {
+    border-top: 1px solid var(--border);
+    padding: 6px; margin-top: 4px;
+    display: flex; gap: 6px;
+  }
+  .parts-menu-action {
+    flex: 1;
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text); font-size: 11px; font-weight: 500;
+    font-family: inherit; cursor: pointer;
+    padding: 6px; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    transition: all 0.12s;
+  }
+  .parts-menu-action:hover { background: var(--hover); }
+
+  /* Color swatches */
+  .color-swatches {
+    display: flex; gap: 3px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 3px;
+  }
+  .swatch {
+    width: 18px; height: 18px; border-radius: 4px;
+    border: 1.5px solid transparent;
+    cursor: pointer; padding: 0;
+    outline: none; position: relative;
+    transition: transform 0.1s, border-color 0.1s;
+  }
+  .swatch:hover { transform: scale(1.12); }
+  .swatch.active {
+    border-color: white;
+    box-shadow: 0 0 0 1.5px var(--blue);
+  }
+  body.light .swatch.active { border-color: #0A0A0B; }
+  .swatch.custom {
+    background: linear-gradient(135deg, #ff5b5b 0%, #ffd447 33%, #5bff85 66%, #5b9fff 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: white; overflow: hidden;
+  }
+  .swatch.custom input[type=color] {
+    position: absolute; opacity: 0; width: 100%; height: 100%;
+    cursor: pointer; border: none; background: none;
+  }
+  .swatch.custom svg {
+    pointer-events: none;
+    filter: drop-shadow(0 1px 1px rgba(0,0,0,0.5));
+  }
+
+  /* Dropzone overlay (appears when dragging file over window) */
+  .dropzone-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0, 102, 255, 0.18);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 9999;
+    pointer-events: none;
+  }
+  .dropzone-overlay.active { display: flex; }
+  .dropzone-inner {
+    background: #0A0A0B;
+    border: 2px dashed var(--blue);
+    border-radius: 16px;
+    padding: 44px 64px;
+    text-align: center;
+    color: white;
+  }
+  .dropzone-inner .icon {
+    color: var(--blue); margin-bottom: 12px;
+  }
+  .dropzone-inner .title {
+    font-size: 18px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px;
+  }
+  .dropzone-inner .sub {
+    font-size: 12px; color: var(--text-dim); letter-spacing: 0.02em;
+  }
+
+  /* Modal (for STEP warning etc) */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 500;
+    display: none;
+    align-items: center; justify-content: center;
+  }
+  .modal-backdrop.active { display: flex; }
+  .modal {
+    background: #14151A;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px;
+    padding: 28px 28px 22px;
+    max-width: 440px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    color: var(--text);
+  }
+  body.light .modal { background: #FFFFFF; border-color: rgba(0,0,0,0.08); }
+  .modal-icon {
+    width: 44px; height: 44px; border-radius: 11px;
+    background: rgba(255, 153, 0, 0.15);
+    color: #FF9900;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 16px;
+  }
+  .modal-title { font-size: 16px; font-weight: 700; letter-spacing: -0.015em; margin-bottom: 8px; }
+  .modal-body { font-size: 13px; color: var(--text-dim); line-height: 1.55; margin-bottom: 18px; }
+  .modal-body code {
+    background: var(--input-bg); padding: 1px 6px;
+    border-radius: 4px; font-family: "SF Mono", ui-monospace, monospace;
+    font-size: 11.5px; color: var(--text);
+  }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .modal-btn {
+    padding: 8px 14px; border-radius: 7px; border: none; cursor: pointer;
+    font-size: 12px; font-weight: 600; font-family: inherit;
+    transition: all 0.12s;
+  }
+  .modal-btn.primary { background: var(--blue); color: white; }
+  .modal-btn.primary:hover { filter: brightness(1.1); }
+  .modal-btn.secondary {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .modal-btn.secondary:hover { background: var(--hover); }
+
+  /* Loading indicator for file parse */
+  .parse-loader {
+    position: absolute; top: 14px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--panel);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 10px 16px;
+    font-size: 12px; color: var(--text);
+    display: none; align-items: center; gap: 10px;
+    z-index: 20;
+  }
+  .parse-loader.active { display: flex; }
+  .parse-loader::before {
+    content: ''; width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  select {
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 10px;
+    color: var(--text); font-size: 12px; font-weight: 500;
+    font-family: inherit; outline: none; cursor: pointer;
+  }
+  .icon-btn {
+    width: 28px; height: 28px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer;
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Body */
+  .body { flex: 1; display: flex; overflow: hidden; position: relative; min-height: 0; }
+
+  /* Left toolbar */
+  .toolbar {
+    width: 56px;
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    align-items: center; padding: 12px 0; gap: 6px;
+    background: var(--panel);
+    backdrop-filter: blur(20px);
+    flex-shrink: 0;
+  }
+  .tool-btn {
+    width: 38px; height: 38px; border-radius: 8px;
+    border: none; cursor: pointer; background: transparent;
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.12s;
+  }
+  .tool-btn:hover { background: var(--hover); }
+  .tool-btn.active {
+    background: var(--blue); color: white;
+    box-shadow: 0 4px 12px var(--blue-glow);
+  }
+  .tool-btn.highlight { background: rgba(0,102,255,0.15); color: var(--blue); }
+  .tool-btn.highlight:hover { background: rgba(0,102,255,0.22); }
+  .tool-divider { width: 28px; height: 1px; background: var(--border); margin: 6px 0; }
+  .spacer { flex: 1; }
+
+  /* Tooltip for toolbar buttons */
+  .tool-btn { position: relative; }
+  .tool-btn::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: calc(100% + 10px);
+    top: 50%;
+    transform: translateY(-50%) translateX(-4px);
+    background: #0A0A0B;
+    color: #F4F5F7;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 5px 9px;
+    border-radius: 6px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    z-index: 1000;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+    border: 1px solid rgba(255,255,255,0.08);
+    letter-spacing: -0.005em;
+  }
+  body.light .tool-btn::after {
+    background: #16171A;
+    color: #FFFFFF;
+    border-color: rgba(0,0,0,0.1);
+  }
+  .tool-btn::before {
+    content: '';
+    position: absolute;
+    left: calc(100% + 4px);
+    top: 50%;
+    transform: translateY(-50%);
+    border: 5px solid transparent;
+    border-right-color: #0A0A0B;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 1000;
+    pointer-events: none;
+  }
+  body.light .tool-btn::before { border-right-color: #16171A; }
+  .tool-btn:hover::after {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+    transition-delay: 0.35s;
+  }
+  .tool-btn:hover::before {
+    opacity: 1;
+    transition-delay: 0.35s;
+  }
+
+  /* Viewport */
+  .viewport {
+    flex: 1; position: relative; background: var(--surface); overflow: hidden; min-width: 0;
+  }
+  .viewport-bg {
+    position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse at 30% 20%, rgba(0,102,255,0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 70% 80%, rgba(0,102,255,0.04) 0%, transparent 50%);
+  }
+  body.light .viewport-bg {
+    background: radial-gradient(ellipse at 30% 20%, rgba(0,102,255,0.05) 0%, transparent 50%);
+  }
+
+  /* Empty state overlay */
+  .empty-state {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .empty-inner {
+    text-align: center;
+    pointer-events: auto;
+  }
+  .empty-icon {
+    color: var(--text-dim); opacity: 0.35;
+    margin-bottom: 18px;
+  }
+  .empty-title {
+    font-size: 17px; font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.01em;
+    margin-bottom: 6px;
+  }
+  .empty-sub {
+    font-size: 12px; color: var(--text-dim);
+    letter-spacing: 0.06em;
+    margin-bottom: 22px;
+  }
+  .empty-upload {
+    background: var(--blue); color: white;
+    border: none; border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+    display: inline-flex; align-items: center; gap: 7px;
+    box-shadow: 0 4px 18px var(--blue-glow);
+    transition: filter 0.12s, transform 0.12s;
+  }
+  .empty-upload:hover { filter: brightness(1.08); transform: translateY(-1px); }
+  .empty-hint {
+    margin-top: 14px;
+    font-size: 11px; color: var(--text-dim);
+    font-style: italic;
+  }
+  #canvas-mount { width: 100%; height: 100%; cursor: grab; }
+  #canvas-mount.measuring { cursor: crosshair; }
+  #canvas-mount.dragging { cursor: grabbing; }
+
+  /* Overlays */
+  .overlay-svg { position: absolute; inset: 0; pointer-events: none; }
+  .overlay-html { position: absolute; inset: 0; pointer-events: none; }
+
+  .meas-label {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    background: var(--blue); color: white;
+    font-size: 11px; font-weight: 600;
+    padding: 3px 3px 3px 9px; border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 102, 255, 0.35);
+    display: flex; align-items: center; gap: 2px;
+    pointer-events: auto; white-space: nowrap;
+  }
+  .meas-label.locked {
+    background: #0A0A0B;
+    color: #FFFFFF;
+    border: 1.5px solid var(--blue);
+    box-shadow: 0 4px 12px rgba(0, 102, 255, 0.25);
+  }
+  .meas-label .label-name {
+    font-size: 10px;
+    font-weight: 500;
+    opacity: 0.85;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-right: 5px;
+    margin-right: 2px;
+    border-right: 1px solid rgba(255,255,255,0.25);
+  }
+  .meas-label.locked .label-name {
+    border-right-color: rgba(255,255,255,0.2);
+  }
+  .meas-label .dist-span {
+    padding-right: 2px;
+    margin-right: 2px;
+  }
+  /* Larger tap targets — 22x22 with 4px padding. The hitbox is the full square
+     even though the icon is 11px so the user doesn't need pixel precision. */
+  .meas-label button {
+    background: transparent; border: none;
+    color: white; border-radius: 4px; cursor: pointer;
+    width: 22px; height: 22px;
+    padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0.85;
+    transition: opacity 0.1s, background 0.1s;
+    flex-shrink: 0;
+  }
+  .meas-label button:hover {
+    opacity: 1;
+    background: rgba(255,255,255,0.22);
+  }
+  .meas-label button:active { background: rgba(255,255,255,0.32); }
+  .meas-label.locked button { color: var(--blue); opacity: 0.95; }
+  .meas-label.locked button:hover { background: rgba(0,102,255,0.18); }
+  .meas-label .lock-btn.is-locked { opacity: 1; background: rgba(255,255,255,0.12); }
+  /* Delete button gets a red hover to confirm the destructive action */
+  .meas-label .del-btn:hover {
+    background: rgba(255, 59, 48, 0.28);
+    color: white;
+  }
+  .meas-label.locked .del-btn:hover {
+    background: rgba(255, 59, 48, 0.18);
+    color: #FF3B30;
+  }
+
+  /* HUD panels */
+  .hud {
+    position: absolute;
+    background: var(--panel);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 10px 12px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.18);
+    pointer-events: auto;
+  }
+  .hud.compact { padding: 8px 10px; }
+  .hud-label { font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.08em; margin-bottom: 4px; }
+  .hud-value { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .hud-hint { font-size: 10.5px; color: var(--text-dim); margin-top: 4px; line-height: 1.4; }
+
+  .view-grid { display: grid; grid-template-columns: repeat(3, 32px); gap: 3px; }
+  .view-btn {
+    padding: 6px 0; border: none; border-radius: 5px;
+    background: var(--hover);
+    color: var(--text);
+    font-size: 10px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+    display: flex; align-items: center; justify-content: center; gap: 3px;
+    transition: all 0.12s;
+  }
+  .view-btn:hover { background: rgba(255,255,255,0.14); }
+  body.light .view-btn:hover { background: rgba(0,0,0,0.1); }
+  .view-btn.highlight { background: var(--blue); color: white; }
+  .view-btn.wide { grid-column: span 3; padding: 5px 0; }
+
+  .zoom-btn {
+    width: 28px; height: 26px; border: none; border-radius: 5px;
+    background: var(--hover); color: var(--text); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .bottom-hint {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    background: var(--panel);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 10.5px; color: var(--text-dim);
+    display: flex; gap: 14px; align-items: center;
+    pointer-events: auto;
+  }
+  kbd {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 5px; border-radius: 3px;
+    font-family: "SF Mono", ui-monospace, monospace; font-size: 9.5px;
+    margin-right: 3px; color: var(--text);
+  }
+  body.light kbd { background: rgba(0,0,0,0.06); }
+
+  /* Right panel */
+  .right-panel {
+    width: 280px;
+    border-left: 1px solid var(--border);
+    background: var(--panel);
+    backdrop-filter: blur(20px);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .panel-section {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-section.grow { flex: 1; overflow-y: auto; min-height: 0; }
+  .panel-section:last-child { border-bottom: none; }
+  .panel-header {
+    font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.1em;
+    font-weight: 600; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .panel-header .count {
+    margin-left: auto;
+    font-size: 9px; padding: 1px 6px; border-radius: 8px;
+    background: var(--blue); color: white; font-weight: 700;
+  }
+
+  /* Section controls */
+  .axis-buttons { display: flex; gap: 4px; margin-bottom: 10px; }
+  .axis-btn {
+    flex: 1; padding: 6px 0; font-size: 11px; font-weight: 600;
+    border-radius: 6px; border: none; cursor: pointer;
+    background: var(--input-bg); color: var(--text);
+    font-family: inherit; transition: all 0.15s;
+  }
+  .axis-btn.active { background: var(--blue); color: white; }
+  .section-row {
+    font-size: 10px; color: var(--text-dim); margin-bottom: 6px;
+    display: flex; justify-content: space-between;
+  }
+  .section-row .val { color: var(--blue); font-weight: 600; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--blue); }
+
+  /* Measurement list */
+  .meas-empty {
+    padding: 20px 12px; text-align: center;
+    font-size: 11px; color: var(--text-dim); line-height: 1.5;
+    background: var(--input-bg); border-radius: 8px;
+    border: 1px dashed var(--border);
+  }
+  .meas-empty svg { margin: 0 auto 8px; opacity: 0.5; }
+  .meas-empty-sub { font-size: 10px; margin-top: 4px; }
+
+  .meas-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; margin-bottom: 4px;
+    background: var(--input-bg);
+    border-radius: 7px;
+    border: 1px solid transparent;
+    position: relative;
+  }
+  .meas-item.locked {
+    border-color: var(--blue-line);
+    background: rgba(0, 102, 255, 0.06);
+  }
+  .meas-body {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .meas-label-input {
+    background: transparent; border: none; outline: none;
+    color: var(--text); font-size: 11px; font-weight: 500;
+    font-family: inherit;
+    padding: 2px 4px;
+    border-radius: 4px;
+    width: 100%;
+    transition: background 0.12s;
+  }
+  .meas-label-input::placeholder { color: var(--text-dim); font-style: italic; }
+  .meas-label-input:hover { background: var(--hover); }
+  .meas-label-input:focus { background: var(--hover); outline: 1px solid var(--blue); }
+  .meas-badge {
+    width: 22px; height: 22px; border-radius: 5px;
+    background: var(--blue); color: white;
+    font-size: 10px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .meas-dist {
+    font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+    padding: 0 4px;
+  }
+  .meas-dist .unit { color: var(--text-dim); font-weight: 400; font-size: 10px; }
+  .mini-btn {
+    width: 24px; height: 24px;
+    background: transparent; border: none; cursor: pointer;
+    border-radius: 5px; color: var(--text-dim);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.12s;
+  }
+  .mini-btn:hover { background: var(--hover); color: var(--text); }
+  .mini-btn.is-locked {
+    color: white;
+    background: var(--blue);
+  }
+  .mini-btn.is-locked:hover { background: #0052cc; color: white; }
+  .mini-btn.danger:hover {
+    background: rgba(255, 59, 48, 0.15);
+    color: #FF3B30;
+  }
+
+  .clear-btn {
+    width: 100%; padding: 8px; margin-top: 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 7px; color: var(--text-dim);
+    font-size: 11px; cursor: pointer; font-family: inherit;
+  }
+  .clear-btn:hover { color: var(--text); }
+
+  /* Bounding box */
+  .bbox-grid { display: flex; gap: 6px; }
+  .bbox-cell {
+    flex: 1; padding: 8px 6px;
+    background: var(--input-bg);
+    border-radius: 6px; text-align: center;
+  }
+  .bbox-axis { font-size: 9px; color: var(--blue); font-weight: 700; letter-spacing: 0.08em; }
+  .bbox-val { font-size: 12px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .bbox-unit { font-size: 9px; color: var(--text-dim); }
+
+  /* Features list */
+  .feature-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; margin-bottom: 3px;
+    background: var(--input-bg);
+    border-radius: 6px;
+    font-size: 11px;
+  }
+  .feature-icon {
+    width: 20px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--blue);
+    flex-shrink: 0;
+  }
+  .feature-label { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .feature-val {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600; color: var(--text);
+  }
+  .feature-val .unit { color: var(--text-dim); font-size: 9px; font-weight: 400; margin-left: 2px; }
+  .feature-empty {
+    padding: 12px 8px; text-align: center;
+    font-size: 10.5px; color: var(--text-dim);
+    background: var(--input-bg);
+    border-radius: 6px;
+    border: 1px dashed var(--border);
+  }
+
+  /* Export */
+  .export-btn {
+    width: 100%; padding: 11px;
+    background: var(--blue);
+    border: none; border-radius: 8px;
+    color: white; font-size: 12px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    box-shadow: 0 4px 14px var(--blue-glow);
+    transition: all 0.15s;
+  }
+  .export-btn:hover { filter: brightness(1.08); }
+  .export-btn:disabled { opacity: 0.6; cursor: wait; }
+  .export-sub {
+    font-size: 9.5px; color: var(--text-dim); margin-top: 6px; line-height: 1.4; text-align: center;
+  }
+
+  /* Toast */
+  .toast {
+    position: absolute; bottom: 80px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--blue); color: white;
+    padding: 9px 16px; border-radius: 8px;
+    font-size: 12px; font-weight: 500;
+    box-shadow: 0 8px 28px var(--blue-glow);
+    z-index: 100;
+    animation: toast-in 0.2s ease-out;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translate(-50%, 10px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+  }
+
+  /* Mobile / smaller screens */
+  /* ================================================
+     TABLET (≤900px) — minor adjustments
+     ================================================ */
+  @media (max-width: 900px) and (min-width: 701px) {
+    .right-panel { width: 240px; }
+  }
+
+  /* ================================================
+     PHONE (≤700px) — full mobile reflow
+     The desktop UI's three-column layout (left toolbar,
+     viewport, right sidebar) doesn't fit on phones. On
+     phones we compress the top bar, float the toolbar
+     over the canvas, and replace the right sidebar with
+     a bottom sheet that slides up.
+     ================================================ */
+  @media (max-width: 700px) {
+    /* Top bar — much more compact */
+    .top-bar {
+      padding: 8px 10px;
+      gap: 6px;
+      min-height: 50px;
+    }
+    .brand {
+      gap: 6px;
+    }
+    .brand-mark { width: 26px; height: 26px; }
+    /* Hide the wordmark text — keep just the logo */
+    .brand-text { display: none; }
+
+    /* Hide part-name input on phone — accessed via bottom sheet "Settings" */
+    .part-meta { display: none; }
+
+    .top-controls { gap: 5px; flex: 1; justify-content: flex-end; min-width: 0; }
+
+    /* Parts dropdown shrinks to fit available space */
+    .parts-trigger {
+      padding: 6px 8px;
+      max-width: 130px;
+    }
+    .parts-label { max-width: 90px; font-size: 11px; }
+    .parts-menu {
+      min-width: 240px;
+      max-width: calc(100vw - 24px);
+      right: 0;
+      max-height: 60vh;
+    }
+
+    /* Color swatches hidden on phone — accessed via bottom sheet */
+    .color-swatches { display: none !important; }
+
+    /* Upload button — icon only, square */
+    .upload-btn {
+      padding: 8px;
+      width: 36px; height: 36px;
+      justify-content: center;
+    }
+    .upload-btn-text { display: none; }
+
+    /* Unit selector compact */
+    #unit-select {
+      padding: 6px 6px;
+      font-size: 11px;
+      min-width: 48px;
+    }
+
+    /* Theme button hidden — accessed from sheet */
+    #theme-btn { display: none; }
+
+    /* Mobile "more" menu button (added via JS-equivalent HTML below) */
+    .more-btn {
+      display: flex !important;
+      width: 36px; height: 36px;
+      align-items: center; justify-content: center;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    /* The body becomes a single column (just the viewport) */
+    .body { flex-direction: column; }
+
+    /* Toolbar floats over the canvas, top-left, vertical */
+    .toolbar {
+      position: absolute;
+      top: 12px; left: 12px;
+      z-index: 10;
+      flex-direction: column;
+      width: auto;
+      padding: 4px;
+      gap: 2px;
+      background: var(--panel);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.32);
+    }
+    /* Bigger touch targets */
+    .tool-btn {
+      width: 40px; height: 40px;
+    }
+    .tool-btn svg {
+      width: 19px; height: 19px;
+    }
+    /* Hide less-essential tools on phone (accessed from sheet) */
+    .tool-btn[data-mobile-hide="true"],
+    .tool-divider[data-mobile-hide="true"],
+    .spacer[data-mobile-hide="true"] { display: none !important; }
+
+    /* HUD elements: hide all in-canvas overlays on phone except the
+       zoom controls. The toolbar replaces the active-tool indicator;
+       the view cube is replaced by orbit gestures. */
+    #hud-active-tool { display: none; }
+    #hud-view-cube { display: none; }
+    .bottom-hint { display: none; }
+    /* Reposition zoom controls so they don't get hidden by the bottom sheet peek */
+    #hud-zoom {
+      bottom: 78px !important; /* clear the 60px sheet + breathing room */
+    }
+    .zoom-btn { width: 36px; height: 36px; }
+
+    /* Right panel becomes a bottom sheet */
+    .right-panel {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      width: 100%;
+      height: auto;
+      max-height: 85vh;
+      border-left: none;
+      border-top: 1px solid var(--border);
+      border-radius: 16px 16px 0 0;
+      background: var(--panel);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      box-shadow: 0 -10px 40px rgba(0,0,0,0.4);
+      z-index: 20;
+      transform: translateY(calc(100% - 60px)); /* peek state */
+      transition: transform 0.32s cubic-bezier(.32,.72,.18,1);
+      padding: 0;
+      overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .right-panel.sheet-half { transform: translateY(45vh); }
+    .right-panel.sheet-full { transform: translateY(8vh); }
+
+    /* Drag handle on top of the sheet */
+    .sheet-handle {
+      display: flex !important;
+      flex-direction: column;
+      align-items: center;
+      padding: 8px 0 4px;
+      cursor: grab;
+      flex-shrink: 0;
+      background: transparent;
+      touch-action: none;
+    }
+    .sheet-handle::before {
+      content: '';
+      width: 36px; height: 4px;
+      border-radius: 2px;
+      background: var(--text-dim);
+      opacity: 0.4;
+    }
+    .sheet-summary {
+      display: flex !important;
+      align-items: center; justify-content: space-between;
+      padding: 4px 16px 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .sheet-summary-left {
+      display: flex; gap: 14px; align-items: center;
+    }
+    .sheet-summary-stat {
+      display: flex; gap: 4px; align-items: center;
+    }
+    .sheet-summary-stat strong {
+      color: var(--text); font-weight: 600;
+    }
+    .sheet-summary-chev {
+      transition: transform 0.2s;
+    }
+    .right-panel.sheet-half .sheet-summary-chev,
+    .right-panel.sheet-full .sheet-summary-chev {
+      transform: rotate(180deg);
+    }
+
+    /* The scrollable content wrapper */
+    .sheet-scroll {
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      flex: 1;
+      padding: 0 16px 24px;
+      /* Hide scroll content when sheet is collapsed (peek state) */
+    }
+    .right-panel:not(.sheet-half):not(.sheet-full) .sheet-scroll {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    /* Panel headers slightly bigger for touch */
+    .panel-header { font-size: 11px; }
+
+    /* Items get more vertical padding for touch */
+    .meas-item { padding: 10px 12px; min-height: 52px; }
+    .meas-label-input { font-size: 13px; padding: 6px 8px; }
+    .meas-dist { font-size: 13px; }
+    .mini-btn {
+      width: 32px; height: 32px;
+    }
+
+    .feature-item {
+      padding: 11px 12px;
+      min-height: 44px;
+    }
+
+    .bbox-cell { padding: 12px 6px; }
+    .bbox-val { font-size: 16px; }
+
+    .export-btn {
+      padding: 14px;
+      font-size: 14px;
+    }
+
+    /* Empty state — smaller for phone */
+    .empty-icon svg { width: 40px; height: 40px; }
+    .empty-title { font-size: 15px; }
+    .empty-sub { font-size: 11px; margin-bottom: 18px; }
+    .empty-upload { padding: 11px 18px; font-size: 13px; }
+    .empty-hint { font-size: 10px; }
+
+    /* Measurement labels: bigger touch targets */
+    .meas-label {
+      font-size: 12px;
+      padding: 4px 4px 4px 10px;
+    }
+    .meas-label button {
+      width: 28px; height: 28px;
+    }
+    .meas-label .label-name { max-width: 70px; }
+
+    /* Modal — less padding on small screens */
+    .modal {
+      padding: 24px 22px 22px;
+      width: calc(100vw - 28px);
+    }
+
+    /* Toast */
+    .toast {
+      bottom: 78px;
+      font-size: 12px;
+    }
+
+    /* "More" menu sheet — separate sheet for phone-only options */
+    .more-sheet {
+      display: none;
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      background: var(--panel);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border-radius: 16px 16px 0 0;
+      border-top: 1px solid var(--border);
+      z-index: 30;
+      padding: 8px 0 max(20px, env(safe-area-inset-bottom));
+      box-shadow: 0 -10px 40px rgba(0,0,0,0.4);
+      animation: sheet-up 0.24s cubic-bezier(.32,.72,.18,1);
+    }
+    .more-sheet.open { display: block !important; }
+    @keyframes sheet-up {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+    .more-sheet-handle {
+      width: 36px; height: 4px;
+      background: var(--text-dim);
+      opacity: 0.4;
+      border-radius: 2px;
+      margin: 8px auto 14px;
+    }
+    .more-sheet-section {
+      padding: 6px 18px 14px;
+    }
+    .more-sheet-section + .more-sheet-section {
+      border-top: 1px solid var(--border);
+      padding-top: 14px;
+    }
+    .more-sheet-label {
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+    }
+    .more-sheet-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 0;
+      font-size: 14px; color: var(--text);
+    }
+    .more-sheet-row + .more-sheet-row {
+      border-top: 1px solid rgba(255,255,255,0.04);
+    }
+    body.light .more-sheet-row + .more-sheet-row {
+      border-top-color: rgba(0,0,0,0.04);
+    }
+    .more-sheet-row > .row-action {
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 12px; font-weight: 500;
+      cursor: pointer; font-family: inherit;
+    }
+    .more-sheet-row > .row-action.active {
+      background: var(--blue); color: white; border-color: var(--blue);
+    }
+    /* Color swatch row in mobile sheet */
+    .more-sheet-swatches {
+      display: flex; gap: 6px; flex-wrap: wrap;
+    }
+    .more-sheet-swatches .swatch {
+      width: 32px; height: 32px;
+    }
+    .more-sheet-backdrop {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 25;
+      backdrop-filter: blur(2px);
+    }
+    .more-sheet-backdrop.open { display: block !important; }
+
+    /* Mobile-only: compact part-name editor in More sheet */
+    .more-part-name {
+      width: 100%;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 10px 12px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      outline: none;
+    }
+    .more-part-name:focus { border-color: var(--blue); }
+  }
+
+  /* The "more" button is hidden on desktop and revealed in the phone media query */
+  .more-btn { display: none; }
+  .sheet-handle, .sheet-summary { display: none; }
+  /* More sheet — hidden by default; mobile media query positions/shows it */
+  .more-sheet, .more-sheet-backdrop { display: none; }
+</style>
+</head>
+<body>
+
+<!-- Password gate. Shown on load, hidden once the user enters the right password.
+     IMPORTANT: this is client-side only. It keeps casual visitors out, but
+     anyone with DevTools can bypass it. The actual file contents (geometry,
+     parsing logic, etc.) are visible to anyone who downloads the HTML. -->
+<div id="gate" class="gate">
+  <div class="gate-card">
+    <div class="gate-logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+    </div>
+    <div class="gate-title">Imaginarium CAD Viewer</div>
+    <div class="gate-sub">Enter access code to continue</div>
+    <form class="gate-form" id="gate-form" autocomplete="off">
+      <input
+        type="password"
+        id="gate-input"
+        class="gate-input"
+        placeholder="Access code"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        inputmode="numeric"
+        autofocus>
+      <div class="gate-error" id="gate-error">Incorrect code. Try again.</div>
+      <button type="submit" class="gate-btn">Unlock</button>
+    </form>
+    <div class="gate-foot">Private preview · ask the owner for access</div>
+  </div>
+</div>
+
+<script>
+  // ---- PASSWORD GATE ----
+  // Lightweight gate: keeps casual visitors out, NOT a security boundary.
+  // Anyone with DevTools can read everything in this file. Don't use this
+  // to protect anything actually sensitive.
+  (function setupGate() {
+    // Two checks — primary is a hash comparison (so the password isn't
+    // visible in plain text in source). Fallback is a direct compare for
+    // browsers/contexts where the WebCrypto API isn't available
+    // (e.g. some file:// loads in older browsers).
+    const EXPECTED_HASH = '8135003b8d1ea93f2dd32d84aec1053b9866a25b3c93a6152d76860ea2d33516';
+    const EXPECTED_CODE = '081099'; // fallback only; same security level
+    const GATE_KEY = 'imaginarium-gate-v1';
+    const gate = document.getElementById('gate');
+    const form = document.getElementById('gate-form');
+    const input = document.getElementById('gate-input');
+    const errEl = document.getElementById('gate-error');
+
+    function unlock() {
+      gate.classList.add('gate-unlocked');
+      setTimeout(() => gate.remove(), 360);
+    }
+
+    // Already unlocked this session?
+    try {
+      if (sessionStorage.getItem(GATE_KEY) === 'ok') {
+        unlock();
+        return;
+      }
+    } catch (e) { /* sessionStorage unavailable — proceed with prompt */ }
+
+    async function checkPassword(value) {
+      // Try the hash check if WebCrypto is available, otherwise fall back.
+      if (window.crypto && window.crypto.subtle && window.TextEncoder) {
+        try {
+          const buf = new TextEncoder().encode(value);
+          const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+          const h = Array.from(new Uint8Array(hashBuf))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+          return h === EXPECTED_HASH;
+        } catch (err) {
+          // If hashing fails for any reason, fall through to plain compare
+        }
+      }
+      return value === EXPECTED_CODE;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errEl.classList.remove('show');
+      const value = input.value.trim();
+      if (!value) return;
+
+      const ok = await checkPassword(value);
+      if (ok) {
+        try { sessionStorage.setItem(GATE_KEY, 'ok'); } catch (e) {}
+        unlock();
+      } else {
+        // Visual feedback: shake + clear + error
+        input.value = '';
+        errEl.textContent = 'Incorrect code. Try again.';
+        errEl.classList.add('show');
+        const card = gate.querySelector('.gate-card');
+        card.classList.remove('shake');
+        void card.offsetWidth; // force reflow so the animation can replay
+        card.classList.add('shake');
+        input.focus();
+      }
+    });
+  })();
+</script>
+
+<div id="app">
+  <!-- Dropzone overlay -->
+  <div class="dropzone-overlay" id="dropzone">
+    <div class="dropzone-inner">
+      <svg class="icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <div class="title">Drop CAD file to import</div>
+      <div class="sub">STL · OBJ · STEP · IGES · BREP</div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal-backdrop" id="modal-backdrop">
+    <div class="modal" id="modal">
+      <div class="modal-icon" id="modal-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </div>
+      <div class="modal-title" id="modal-title">STEP files aren't supported natively</div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- Parse loader -->
+  <div class="parse-loader" id="parse-loader">Parsing file…</div>
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+      </div>
+      <div class="brand-text">
+        <div class="name">IMAGINARIUM</div>
+        <div class="sub">CAD VIEWER · v1.0</div>
+      </div>
+      <div class="part-meta">
+        <div class="divider-v"></div>
+        <span class="part-label">Part:</span>
+        <input class="part-input" id="part-name" value="" placeholder="Part name">
+      </div>
+    </div>
+
+    <div class="top-controls">
+      <!-- Parts dropdown — shown once at least one file is loaded -->
+      <div class="parts-dropdown" id="parts-dropdown" style="display:none;">
+        <button class="parts-trigger" id="parts-trigger">
+          <span class="parts-label" id="parts-current">No part</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="parts-menu" id="parts-menu"></div>
+      </div>
+
+      <!-- Color picker — shown when a part is loaded -->
+      <div class="color-swatches" id="color-swatches" style="display:none;">
+        <button class="swatch" data-color="#c8ccd2" title="Brushed aluminum" style="background:#c8ccd2"></button>
+        <button class="swatch" data-color="#6d7079" title="Graphite" style="background:#6d7079"></button>
+        <button class="swatch" data-color="#b08968" title="Copper" style="background:#b08968"></button>
+        <button class="swatch" data-color="#ffd447" title="Brass" style="background:#ffd447"></button>
+        <button class="swatch" data-color="#0066ff" title="Imaginarium blue" style="background:#0066ff"></button>
+        <button class="swatch" data-color="#e85d3b" title="Terracotta" style="background:#e85d3b"></button>
+        <label class="swatch custom" title="Custom color">
+          <input type="color" id="custom-color" value="#c8ccd2">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125 0-.941.746-1.688 1.688-1.688h1.988c3.101 0 5.648-2.547 5.648-5.688C22 6.375 17.523 2 12 2z"/></svg>
+        </label>
+      </div>
+
+      <!-- Upload control. Implemented as <label> wrapping the file input
+           rather than a <button> that programmatically clicks a hidden
+           input. The label-direct-tap pattern is the only reliable way to
+           open the file picker on iOS Safari — programmatic .click() on a
+           display:none input is sometimes silently blocked. -->
+      <label class="upload-btn" for="file-input">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <span class="upload-btn-text">Upload</span>
+      </label>
+      <!-- File input: visually hidden but still in the document layout so
+           Safari treats it as a real, tappable element via the label.
+           The `accept` attribute is intentionally absent — iOS greys out
+           files with extensions it doesn't recognize as MIME types, so we
+           let everything through and detect the format from the file's
+           contents in parseFile(). -->
+      <input type="file" id="file-input" multiple
+             style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">
+      <select id="unit-select">
+        <option>mm</option><option>in</option><option>m</option>
+      </select>
+      <button class="icon-btn" id="theme-btn" title="Toggle theme">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+      <!-- Mobile-only "more" menu -->
+      <button class="more-btn" id="more-btn" title="More options">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div class="body">
+    <!-- Left toolbar -->
+    <div class="toolbar">
+      <button class="tool-btn active" id="tool-orbit" data-tip="Orbit · drag to rotate">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h-2l5 -5l5 5h-2v4l-4 0z"/><path d="M17 5v-2l5 5l-5 5v-2h-4l0 -4z"/><path d="M19 17h2l-5 5l-5 -5h2v-4l4 0z"/><path d="M7 19v2l-5 -5l5 -5v2h4l0 4z"/></svg>
+      </button>
+      <button class="tool-btn" id="tool-measure" data-tip="Measure · click two snap points">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.3 8.7L8.7 21.3a2.4 2.4 0 0 1-3.4 0L2.7 18.7a2.4 2.4 0 0 1 0-3.4L15.3 2.7a2.4 2.4 0 0 1 3.4 0l2.6 2.6a2.4 2.4 0 0 1 0 3.4z"/><path d="M7.5 10.5l2 2"/><path d="M10.5 7.5l2 2"/><path d="M13.5 4.5l2 2"/><path d="M4.5 13.5l2 2"/></svg>
+      </button>
+      <button class="tool-btn" id="tool-section" data-tip="Cross-section">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+      </button>
+      <div class="tool-divider" data-mobile-hide="true"></div>
+      <button class="tool-btn" id="tool-wireframe" data-tip="Toggle wireframe" data-mobile-hide="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      </button>
+      <button class="tool-btn active" id="tool-grid" data-tip="Toggle grid" data-mobile-hide="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+      </button>
+      <button class="tool-btn" id="tool-rotate" data-tip="Auto-rotate" data-mobile-hide="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+      </button>
+      <div class="spacer" data-mobile-hide="true"></div>
+      <button class="tool-btn" id="tool-screenshot" data-tip="Save screenshot as PNG" data-mobile-hide="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      </button>
+      <button class="tool-btn highlight" id="tool-report" data-tip="Export PDF report" data-mobile-hide="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>
+      </button>
+    </div>
+
+    <!-- Viewport -->
+    <div class="viewport">
+      <div class="viewport-bg"></div>
+      <div id="canvas-mount"></div>
+
+      <!-- Empty state overlay (shown when no parts loaded) -->
+      <div class="empty-state" id="empty-state">
+        <div class="empty-inner">
+          <div class="empty-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          </div>
+          <div class="empty-title">Start by uploading a CAD file</div>
+          <div class="empty-sub">STL · OBJ · STEP · IGES · BREP</div>
+          <label class="empty-upload" for="file-input">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Choose file
+          </label>
+          <div class="empty-hint">or drop a file anywhere on the window</div>
+          <div class="empty-hint" style="margin-top:6px; opacity:0.7;">
+            <strong style="color:var(--text); font-weight:600;">On iPhone:</strong> if your file is greyed out, rename it to <code style="background:rgba(255,255,255,0.06); padding:1px 5px; border-radius:3px;">.txt</code> first — the viewer detects the format from the file contents.
+          </div>
+        </div>
+      </div>
+
+      <svg class="overlay-svg" id="overlay-svg"></svg>
+      <div class="overlay-html" id="overlay-html"></div>
+
+      <!-- Top-left HUD -->
+      <!-- ACTIVE TOOL indicator -->
+      <div class="hud" id="hud-active-tool" style="top: 14px; left: 14px;">
+        <div class="hud-label">ACTIVE TOOL</div>
+        <div class="hud-value" id="hud-tool">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0066FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h-2l5 -5l5 5h-2v4l-4 0z"/><path d="M17 5v-2l5 5l-5 5v-2h-4l0 -4z"/><path d="M19 17h2l-5 5l-5 -5h2v-4l4 0z"/><path d="M7 19v2l-5 -5l5 -5v2h4l0 4z"/></svg>
+          Orbit
+        </div>
+        <div class="hud-hint" id="hud-hint"></div>
+      </div>
+
+      <!-- Top-right view cube -->
+      <div class="hud compact" id="hud-view-cube" style="top: 14px; right: 14px;">
+        <div class="hud-label">VIEW</div>
+        <div class="view-grid">
+          <button class="view-btn" data-view="top">T</button>
+          <button class="view-btn highlight" data-view="iso">ISO</button>
+          <button class="view-btn" data-view="bottom">Bot</button>
+          <button class="view-btn" data-view="left">L</button>
+          <button class="view-btn" data-view="front">F</button>
+          <button class="view-btn" data-view="right">R</button>
+        </div>
+        <div style="display:flex; gap:3px; margin-top:6px;">
+          <button class="view-btn wide" id="btn-fit">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+            Fit
+          </button>
+        </div>
+      </div>
+
+      <!-- Bottom-left zoom -->
+      <div class="hud compact" id="hud-zoom" style="bottom: 14px; left: 14px;">
+        <div style="display:flex; flex-direction:column; gap:3px; align-items:center;">
+          <button class="zoom-btn" id="zoom-in">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          </button>
+          <div id="zoom-val" style="font-size:10px; color:var(--text-dim); font-variant-numeric:tabular-nums; padding:2px 0; min-width:32px; text-align:center;">100%</div>
+          <button class="zoom-btn" id="zoom-out">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Bottom hint -->
+      <div class="bottom-hint">
+        <span><kbd>drag</kbd>orbit</span>
+        <span><kbd>⇧+drag</kbd>pan</span>
+        <span><kbd>pinch</kbd>zoom</span>
+      </div>
+    </div>
+
+    <!-- Right panel — desktop sidebar / mobile bottom sheet -->
+    <div class="right-panel" id="right-panel">
+      <!-- Sheet drag handle (mobile only) -->
+      <div class="sheet-handle" id="sheet-handle"></div>
+      <div class="sheet-summary" id="sheet-summary">
+        <div class="sheet-summary-left">
+          <span class="sheet-summary-stat">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.3 8.7L8.7 21.3a2.4 2.4 0 0 1-3.4 0L2.7 18.7a2.4 2.4 0 0 1 0-3.4L15.3 2.7a2.4 2.4 0 0 1 3.4 0l2.6 2.6a2.4 2.4 0 0 1 0 3.4z"/></svg>
+            <strong id="sheet-meas-count">0</strong>
+            <span>measurements</span>
+          </span>
+          <span class="sheet-summary-stat">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
+            <strong id="sheet-feature-count">0</strong>
+            <span>features</span>
+          </span>
+        </div>
+        <svg class="sheet-summary-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+      </div>
+
+      <!-- Scrollable contents -->
+      <div class="sheet-scroll" id="sheet-scroll">
+      <!-- Section panel (hidden by default) -->
+      <div class="panel-section" id="section-panel" style="display:none;">
+        <div class="panel-header">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+          CROSS-SECTION
+        </div>
+        <div class="axis-buttons">
+          <button class="axis-btn active" data-axis="x">X</button>
+          <button class="axis-btn" data-axis="y">Y</button>
+          <button class="axis-btn" data-axis="z">Z</button>
+        </div>
+        <div class="section-row">
+          <span>Position</span>
+          <span class="val" id="section-val">0.00 mm</span>
+        </div>
+        <input type="range" id="section-slider" min="-2" max="2" step="0.01" value="0">
+        <div class="hud-hint" style="margin-top:6px;">Wireframe ghost of clipped geometry remains visible</div>
+      </div>
+
+      <!-- Measurements panel -->
+      <div class="panel-section grow">
+        <div class="panel-header">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.3 8.7L8.7 21.3a2.4 2.4 0 0 1-3.4 0L2.7 18.7a2.4 2.4 0 0 1 0-3.4L15.3 2.7a2.4 2.4 0 0 1 3.4 0l2.6 2.6a2.4 2.4 0 0 1 0 3.4z"/></svg>
+          MEASUREMENTS
+          <span class="count" id="meas-count">0</span>
+        </div>
+        <div id="meas-list"></div>
+      </div>
+
+      <!-- Detected features -->
+      <div class="panel-section" id="features-section">
+        <div class="panel-header">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
+          DETECTED FEATURES
+          <span class="count" id="features-count" style="margin-left:auto;">0</span>
+        </div>
+        <div id="features-list"></div>
+        <div class="export-sub" style="margin-top:8px; text-align:left;">Auto-detected dimensions — included in PDF report</div>
+      </div>
+
+      <!-- Bounding box -->
+      <div class="panel-section">
+        <div class="panel-header">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          BOUNDING BOX
+        </div>
+        <div class="bbox-grid" id="bbox-grid"></div>
+      </div>
+
+      <!-- Export -->
+      <div class="panel-section">
+        <button class="export-btn" id="btn-export">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>
+          Export PDF Report
+        </button>
+        <div class="export-sub">4-view layout · dimensions · branded</div>
+      </div>
+      </div><!-- /.sheet-scroll -->
+    </div>
+  </div>
+
+  <!-- Mobile-only "More" sheet (hidden via CSS on desktop) -->
+  <div class="more-sheet-backdrop" id="more-sheet-backdrop"></div>
+  <div class="more-sheet" id="more-sheet">
+    <div class="more-sheet-handle"></div>
+
+    <div class="more-sheet-section">
+      <div class="more-sheet-label">Part name</div>
+      <input class="more-part-name" id="more-part-name" placeholder="Untitled part">
+    </div>
+
+    <div class="more-sheet-section" id="more-color-section" style="display:none;">
+      <div class="more-sheet-label">Part color</div>
+      <div class="more-sheet-swatches">
+        <button class="swatch" data-color="#c8ccd2" style="background:#c8ccd2"></button>
+        <button class="swatch" data-color="#6d7079" style="background:#6d7079"></button>
+        <button class="swatch" data-color="#b08968" style="background:#b08968"></button>
+        <button class="swatch" data-color="#ffd447" style="background:#ffd447"></button>
+        <button class="swatch" data-color="#0066ff" style="background:#0066ff"></button>
+        <button class="swatch" data-color="#e85d3b" style="background:#e85d3b"></button>
+        <label class="swatch custom" title="Custom color">
+          <input type="color" id="more-custom-color" value="#c8ccd2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/></svg>
+        </label>
+      </div>
+    </div>
+
+    <div class="more-sheet-section">
+      <div class="more-sheet-label">Display</div>
+      <div class="more-sheet-row">
+        <span>Wireframe edges</span>
+        <button class="row-action" id="more-wireframe">Off</button>
+      </div>
+      <div class="more-sheet-row">
+        <span>Ground grid</span>
+        <button class="row-action active" id="more-grid">On</button>
+      </div>
+      <div class="more-sheet-row">
+        <span>Auto-rotate</span>
+        <button class="row-action" id="more-rotate">Off</button>
+      </div>
+      <div class="more-sheet-row">
+        <span>Theme</span>
+        <button class="row-action" id="more-theme">Dark</button>
+      </div>
+    </div>
+
+    <div class="more-sheet-section">
+      <div class="more-sheet-label">Export</div>
+      <div class="more-sheet-row">
+        <span>Save screenshot (PNG)</span>
+        <button class="row-action" id="more-screenshot">Save</button>
+      </div>
+      <div class="more-sheet-row">
+        <span>PDF inspection report</span>
+        <button class="row-action" id="more-pdf">Export</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   IMAGINARIUM CAD VIEWER
+   Pure HTML / JS / Three.js
+   ============================================================ */
+
+const BRAND = {
+  blue: '#0066FF',
+  blueGlow: 'rgba(0, 102, 255, 0.18)',
+};
+
+// --- State ---
+const state = {
+  tool: 'orbit',             // orbit | measure
+
+  // Parts library — every file the user has uploaded this session.
+  // Each entry: {
+  //   id: number,
+  //   name: string (editable partName),
+  //   filename: string (original file name),
+  //   format: 'STL' | 'OBJ' | 'STEP' | 'IGES' | 'BREP',
+  //   geom: THREE.BufferGeometry (post-processed),
+  //   color: string (hex),
+  //   measurements: array,        // user-measured dimensions for THIS part
+  //   autoMeasurements: array,    // auto-detected features for THIS part
+  //   snapPoints: array,          // cached snap points
+  //   uploadedAt: number,
+  // }
+  parts: [],
+  activePartId: null,        // id of the currently-displayed part; null when empty
+
+  units: 'mm',
+  sectionEnabled: false,
+  sectionAxis: 'x',
+  sectionPos: 0,
+  showWireframe: false,
+  showGrid: true,
+  autoRotate: false,
+  theme: 'dark',
+  pendingPoint: null,
+  hoverSnap: null,
+};
+
+// Convenience: return the active part object, or null.
+function activePart() {
+  if (state.activePartId == null) return null;
+  return state.parts.find(p => p.id === state.activePartId) || null;
+}
+
+// Proxy properties — a lot of existing code reads/writes state.measurements,
+// state.autoMeasurements, state.partName etc. Rather than touching every call
+// site, we route those accessors to the active part's storage transparently.
+// If no part is active, writes are silently dropped and reads return sensible
+// empty defaults.
+Object.defineProperty(state, 'measurements', {
+  get() { const p = activePart(); return p ? p.measurements : []; },
+  set(v) { const p = activePart(); if (p) p.measurements = v; },
+});
+Object.defineProperty(state, 'autoMeasurements', {
+  get() { const p = activePart(); return p ? p.autoMeasurements : []; },
+  set(v) { const p = activePart(); if (p) p.autoMeasurements = v; },
+});
+Object.defineProperty(state, 'partName', {
+  get() { const p = activePart(); return p ? p.name : 'Untitled'; },
+  set(v) { const p = activePart(); if (p) p.name = v; },
+});
+Object.defineProperty(state, 'partColor', {
+  get() { const p = activePart(); return p ? p.color : '#c8ccd2'; },
+  set(v) { const p = activePart(); if (p) p.color = v; },
+});
+// Legacy shims — kept to avoid breaking existing checks; they read from active part.
+Object.defineProperty(state, 'uploadedGeom', {
+  get() { const p = activePart(); return p ? p.geom : null; },
+});
+Object.defineProperty(state, 'uploadedName', {
+  get() { const p = activePart(); return p ? p.filename : null; },
+});
+Object.defineProperty(state, 'uploadedFormat', {
+  get() { const p = activePart(); return p ? p.format : null; },
+});
+Object.defineProperty(state, 'source', {
+  // Always 'upload' now that samples are gone; kept so PDF + other checks
+  // don't need touching.
+  get() { return state.parts.length > 0 ? 'upload' : 'none'; },
+});
+
+// --- Three.js objects ---
+let scene, camera, renderer, mesh, wireframe, sectionWire, clipPlane, gridHelper;
+let snapPoints = [];
+const sceneState = {
+  rotX: 0.4, rotY: 0.6, distance: 8,
+  targetRotX: 0.4, targetRotY: 0.6, targetDistance: 8,
+  panX: 0, panY: 0, targetPanX: 0, targetPanY: 0,
+};
+
+const mount = document.getElementById('canvas-mount');
+
+/* ============================================================
+   FILE PARSERS — STL (ASCII/binary), OBJ, STEP (detection only)
+   All parsers return a THREE.BufferGeometry with a non-indexed
+   position attribute, suitable for downstream normals + snap
+   extraction. They throw on malformed input.
+   ============================================================ */
+
+function parseSTL(buffer) {
+  // Heuristic: binary STL has an 80-byte header, then a uint32 triangle count,
+  // then 50 bytes per triangle. ASCII STL starts with the word "solid". Some
+  // binary files also start with "solid" (naughty exporters), so we use a
+  // length check as a tiebreaker.
+  const bytes = new Uint8Array(buffer);
+  const asText = bytes.length < 5_000_000
+    ? new TextDecoder().decode(bytes.slice(0, Math.min(bytes.length, 256)))
+    : '';
+  const looksAscii = asText.trimStart().toLowerCase().startsWith('solid');
+
+  // Compute the size that binary STL would have
+  let isBinary = true;
+  if (looksAscii && bytes.length > 84) {
+    const view = new DataView(buffer);
+    const triCount = view.getUint32(80, true);
+    const expectedBinarySize = 84 + triCount * 50;
+    if (expectedBinarySize !== bytes.length) {
+      isBinary = false;
+    }
+  } else if (bytes.length < 84) {
+    isBinary = false;
+  }
+
+  if (isBinary) return parseSTLBinary(buffer);
+  return parseSTLAscii(new TextDecoder().decode(bytes));
+}
+
+function parseSTLBinary(buffer) {
+  const view = new DataView(buffer);
+  const triCount = view.getUint32(80, true);
+  if (84 + triCount * 50 !== buffer.byteLength) {
+    throw new Error('Binary STL size mismatch (corrupted file?)');
+  }
+  const positions = new Float32Array(triCount * 9);
+  const normals = new Float32Array(triCount * 9);
+  let offset = 84;
+  let anyZeroNormal = false;
+  for (let i = 0; i < triCount; i++) {
+    const nx = view.getFloat32(offset,      true);
+    const ny = view.getFloat32(offset + 4,  true);
+    const nz = view.getFloat32(offset + 8,  true);
+    // Detect zero-length normals — some STL exporters omit these by writing
+    // (0, 0, 0). Three.js's lighting produces black faces for degenerate
+    // normals, so we drop the normal buffer entirely in that case and let
+    // postProcessGeometry compute proper face normals.
+    if (nx === 0 && ny === 0 && nz === 0) anyZeroNormal = true;
+    offset += 12;
+    const base = i * 9;
+    for (let v = 0; v < 3; v++) {
+      positions[base + v * 3]     = view.getFloat32(offset,     true);
+      positions[base + v * 3 + 1] = view.getFloat32(offset + 4, true);
+      positions[base + v * 3 + 2] = view.getFloat32(offset + 8, true);
+      normals[base + v * 3]     = nx;
+      normals[base + v * 3 + 1] = ny;
+      normals[base + v * 3 + 2] = nz;
+      offset += 12;
+    }
+    offset += 2; // attribute byte count
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  if (!anyZeroNormal) {
+    geom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  }
+  return geom;
+}
+
+function parseSTLAscii(text) {
+  const positions = [];
+  // Match "vertex x y z" in a streaming fashion
+  const vertRe = /vertex\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)/g;
+  let m;
+  while ((m = vertRe.exec(text)) !== null) {
+    positions.push(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
+  }
+  if (positions.length === 0 || positions.length % 9 !== 0) {
+    throw new Error('ASCII STL parse error — no valid triangles found');
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  return geom;
+}
+
+function parseOBJ(text) {
+  // Minimal OBJ parser: handles v, f (with and without //n and /t/n indices).
+  // Supports polygons via fan triangulation. Ignores groups, materials, textures.
+  const verts = [];   // flat array of x,y,z triples as numbers (1-indexed)
+  const triPositions = [];
+
+  const lines = text.split(/\r?\n/);
+  const parseVertexIndex = (token) => {
+    // formats: "v", "v/vt", "v/vt/vn", "v//vn"
+    const firstSlash = token.indexOf('/');
+    const idxStr = firstSlash === -1 ? token : token.slice(0, firstSlash);
+    let idx = parseInt(idxStr, 10);
+    if (isNaN(idx)) return null;
+    if (idx < 0) idx = (verts.length / 3) + idx + 1; // negative refs are relative
+    return idx;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith('#')) continue;
+    const parts = line.split(/\s+/);
+    const tag = parts[0];
+    if (tag === 'v') {
+      verts.push(
+        parseFloat(parts[1]),
+        parseFloat(parts[2]),
+        parseFloat(parts[3])
+      );
+    } else if (tag === 'f') {
+      // Collect vertex indices for this face
+      const faceIdx = [];
+      for (let p = 1; p < parts.length; p++) {
+        const vi = parseVertexIndex(parts[p]);
+        if (vi !== null) faceIdx.push(vi);
+      }
+      if (faceIdx.length < 3) continue;
+      // Fan triangulation
+      for (let t = 1; t < faceIdx.length - 1; t++) {
+        const a = (faceIdx[0] - 1) * 3;
+        const b = (faceIdx[t] - 1) * 3;
+        const c = (faceIdx[t + 1] - 1) * 3;
+        if (a < 0 || b < 0 || c < 0 || c + 2 >= verts.length) continue;
+        triPositions.push(
+          verts[a],     verts[a + 1], verts[a + 2],
+          verts[b],     verts[b + 1], verts[b + 2],
+          verts[c],     verts[c + 1], verts[c + 2],
+        );
+      }
+    }
+  }
+  if (triPositions.length === 0) throw new Error('OBJ parse error — no valid faces found');
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(triPositions), 3));
+  return geom;
+}
+
+/* ============================================================
+   OpenCascade WASM loader
+   Lazily initialized on first STEP/IGES/BREP upload. The CDN
+   script tag declares a global `occtimportjs` (factory function).
+   It fetches a ~10MB WASM blob on first call, cached thereafter.
+   ============================================================ */
+
+let occtInstance = null;       // resolved OCCT module
+let occtLoadingPromise = null; // in-flight initialization
+
+function loadOCCT(onProgress) {
+  if (occtInstance) return Promise.resolve(occtInstance);
+  if (occtLoadingPromise) return occtLoadingPromise;
+
+  if (typeof occtimportjs === 'undefined') {
+    return Promise.reject(new Error(
+      'The STEP/IGES parser (occt-import-js) did not load. ' +
+      'This typically means the page was opened without internet access — ' +
+      'the parser is fetched from a CDN on first use. Please reconnect and reload.'
+    ));
+  }
+
+  onProgress && onProgress('Downloading STEP engine (~10 MB)…');
+  occtLoadingPromise = occtimportjs().then(inst => {
+    occtInstance = inst;
+    occtLoadingPromise = null;
+    return inst;
+  }).catch(err => {
+    occtLoadingPromise = null;
+    throw err;
+  });
+  return occtLoadingPromise;
+}
+
+/**
+ * Parse a STEP/IGES/BREP file into a single merged THREE.BufferGeometry.
+ *
+ * The occt-import-js API returns a scene tree with one or more meshes, each
+ * already triangulated. For STEP/IGES, tessellation density is controlled by
+ * deflection parameters — we use a ratio of the bounding box so detail scales
+ * sensibly with part size.
+ *
+ * Colours, assembly hierarchy, and per-face B-rep information are available in
+ * the result but discarded here: we flatten to a single mesh to stay
+ * consistent with how STL/OBJ parts flow through the rest of the app.
+ *
+ * @param {Uint8Array} bytes   — raw file contents
+ * @param {string}     kind    — 'step' | 'iges' | 'brep'
+ * @param {string}     unit    — 'millimeter'|'centimeter'|'meter'|'inch'|'foot'
+ * @param {Function}   onProgress — called with status strings for UI updates
+ */
+async function parseStepIgesBrep(bytes, kind, unit, onProgress) {
+  const occt = await loadOCCT(onProgress);
+  onProgress && onProgress(`Parsing ${kind.toUpperCase()}…`);
+
+  const params = {
+    linearUnit: unit || 'millimeter',
+    linearDeflectionType: 'bounding_box_ratio',
+    linearDeflection: 0.001,  // tight triangulation — important for clean holes
+    angularDeflection: 0.5,   // radians — ~28° per triangle on curves
+  };
+
+  let result;
+  try {
+    if (kind === 'step')       result = occt.ReadStepFile(bytes, params);
+    else if (kind === 'iges')  result = occt.ReadIgesFile(bytes, params);
+    else if (kind === 'brep')  result = occt.ReadBrepFile(bytes, params);
+    else throw new Error('Unsupported kind: ' + kind);
+  } catch (err) {
+    throw new Error(`OpenCascade failed to parse the file: ${err && err.message ? err.message : err}`);
+  }
+
+  if (!result || !result.success) {
+    throw new Error(
+      `The ${kind.toUpperCase()} file could not be parsed. ` +
+      `It may be corrupted, reference external files, or use unsupported features. ` +
+      `Try re-exporting from your CAD tool, or converting to STL/OBJ.`
+    );
+  }
+
+  if (!result.meshes || result.meshes.length === 0) {
+    throw new Error(
+      `The ${kind.toUpperCase()} file parsed successfully but contained no geometry. ` +
+      `This can happen if the file contains only curves/surfaces without solid bodies.`
+    );
+  }
+
+  onProgress && onProgress(`Building geometry (${result.meshes.length} part${result.meshes.length > 1 ? 's' : ''})…`);
+  return mergeOcctMeshes(result.meshes);
+}
+
+/**
+ * Merge all meshes from an occt-import-js result into a single BufferGeometry.
+ *
+ * Each mesh has its own position/normal/index arrays. We concatenate positions
+ * and normals and re-offset the indices so they reference the flattened array.
+ * This loses part-of-assembly grouping — acceptable for the measurement use
+ * case, since all parts share a coordinate system.
+ */
+function mergeOcctMeshes(meshes) {
+  // First pass — totals for pre-allocation
+  let totalTris = 0;
+  let totalVerts = 0;
+  for (const m of meshes) {
+    const pos = m.attributes.position.array;
+    const idx = m.index.array;
+    totalVerts += pos.length / 3;
+    totalTris  += idx.length / 3;
+  }
+
+  // Expand indexed mesh to non-indexed positions so all downstream code (which
+  // assumes triangle-soup geometry) works unchanged. Three copies per vertex
+  // uses more memory but matches our STL/OBJ pipeline exactly.
+  const positions = new Float32Array(totalTris * 9);
+  const normals   = new Float32Array(totalTris * 9);
+
+  let write = 0;
+  for (const m of meshes) {
+    const pos = m.attributes.position.array;
+    const norm = m.attributes.normal ? m.attributes.normal.array : null;
+    const idx = m.index.array;
+    for (let t = 0; t < idx.length; t += 3) {
+      for (let k = 0; k < 3; k++) {
+        const vi = idx[t + k];
+        positions[write]     = pos[vi * 3];
+        positions[write + 1] = pos[vi * 3 + 1];
+        positions[write + 2] = pos[vi * 3 + 2];
+        if (norm) {
+          normals[write]     = norm[vi * 3];
+          normals[write + 1] = norm[vi * 3 + 1];
+          normals[write + 2] = norm[vi * 3 + 2];
+        }
+        write += 3;
+      }
+    }
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  // If no normals were supplied, computeVertexNormals will be called in
+  // postProcessGeometry. If they were, keep them — OCCT normals match the
+  // surface orientation which is more accurate than our recompute.
+  if (meshes[0].attributes.normal) {
+    geom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  }
+  return geom;
+}
+
+// Keep parseSTEP available as an alias that throws the usual "_UNSUPPORTED"
+// marker — except now we only throw it if the WASM couldn't load. The main
+// parse path goes through parseStepIgesBrep via parseFile.
+function parseSTEP(text) {
+  // Kept for backwards compatibility with old call sites; not used on the main
+  // upload path anymore. If reached, it means someone bypassed parseFile.
+  const head = text.slice(0, 200);
+  if (!head.includes('ISO-10303-21')) {
+    throw new Error('File does not look like a valid STEP file (missing ISO-10303-21 header).');
+  }
+  const err = new Error('STEP_UNSUPPORTED');
+  err.schema = 'unknown';
+  throw err;
+}
+
+/**
+ * Sniff the file's actual format from its content instead of relying on the
+ * filename extension. This matters mostly for iOS Safari, which refuses to
+ * let users select files with extensions iOS doesn't recognize (`.stl`,
+ * `.step`, etc. are all greyed out in the picker). The workaround is to
+ * rename the file to something iOS allows (`.txt` is reliable), upload it,
+ * and have the parser figure out what the file actually is.
+ *
+ * Detection order matters: binary STL gets checked first via its known
+ * 80-byte header + triangle count layout, then text formats by their
+ * distinctive opening tokens.
+ */
+async function detectFormat(file) {
+  // Read the first slice as both a binary view and a text snippet.
+  const headBuf = await file.slice(0, 256).arrayBuffer();
+  const headBytes = new Uint8Array(headBuf);
+  const headText = new TextDecoder('utf-8', { fatal: false }).decode(headBytes);
+  const trimmed = headText.replace(/^\uFEFF/, '').trimStart();
+
+  // Binary STL: 80-byte header, then a uint32 triangle count, then
+  // exactly (count * 50) more bytes. If those numbers add up to the file
+  // size, it's almost certainly a binary STL.
+  if (file.size >= 84) {
+    const view = new DataView(headBuf);
+    const triCount = view.getUint32(80, true);
+    if (84 + triCount * 50 === file.size) {
+      return 'STL';
+    }
+  }
+
+  // ASCII STL begins with "solid " followed by an optional name and a
+  // newline. Some exporters omit the name.
+  if (/^solid\b/i.test(trimmed) && /\bfacet\s+normal\b/i.test(headText)) {
+    return 'STL';
+  }
+
+  // STEP: ISO-10303-21 header is mandatory.
+  if (trimmed.includes('ISO-10303-21')) {
+    return 'STEP';
+  }
+
+  // IGES: looks like fixed-width records with column 73 being a section
+  // letter (S/G/D/P/T) followed by line numbers.
+  if (/^.{72}[SGDPT]\s*\d+/m.test(headText)) {
+    return 'IGES';
+  }
+
+  // BREP: OpenCascade's text format starts with "DBRep_DrawableShape" or
+  // begins with a CASCADE Topology header.
+  if (trimmed.startsWith('DBRep_DrawableShape') || trimmed.includes('CASCADE Topology')) {
+    return 'BREP';
+  }
+
+  // OBJ: usually starts with `#` comments, `o` (object), `g` (group),
+  // `mtllib`, `usemtl`, or directly with `v ` (vertex). Look for the
+  // "v <number> <number> <number>" pattern in the first few hundred bytes.
+  if (/(^|\n)\s*v\s+-?[\d.]+\s+-?[\d.]+\s+-?[\d.]+/m.test(headText) ||
+      /(^|\n)\s*(o|g|mtllib|usemtl|vn|vt)\s/m.test(headText)) {
+    return 'OBJ';
+  }
+
+  return null; // unknown
+}
+
+async function parseFile(file, onProgress) {
+  const name = file.name;
+  const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+
+  // First, try the extension. This is the fast path on desktop where users
+  // upload `bracket.stl` directly.
+  let format = null;
+  if (ext === 'stl') format = 'STL';
+  else if (ext === 'obj') format = 'OBJ';
+  else if (ext === 'step' || ext === 'stp') format = 'STEP';
+  else if (ext === 'iges' || ext === 'igs') format = 'IGES';
+  else if (ext === 'brep' || ext === 'brp') format = 'BREP';
+
+  // If the extension didn't match (often an iPhone-renamed file like
+  // `bracket.txt`), peek at the file contents to figure out what it is.
+  if (!format) {
+    onProgress && onProgress('Detecting file format…');
+    format = await detectFormat(file);
+  }
+
+  if (!format) {
+    throw new Error(
+      `Could not recognize "${name}" as a supported CAD file. ` +
+      `Supported formats: STL, OBJ, STEP, IGES, BREP. ` +
+      `If you renamed the file (for example to .txt to upload from iPhone), ` +
+      `make sure it's actually one of these formats inside.`
+    );
+  }
+
+  const linearUnit = state.units === 'mm' ? 'millimeter'
+                  : state.units === 'in' ? 'inch'
+                  : state.units === 'm'  ? 'meter'
+                  : 'millimeter';
+
+  if (format === 'STL') {
+    const buf = await file.arrayBuffer();
+    return { geom: parseSTL(buf), format: 'STL' };
+  }
+  if (format === 'OBJ') {
+    const text = await file.text();
+    return { geom: parseOBJ(text), format: 'OBJ' };
+  }
+  if (format === 'STEP') {
+    const buf = await file.arrayBuffer();
+    const geom = await parseStepIgesBrep(new Uint8Array(buf), 'step', linearUnit, onProgress);
+    return { geom, format: 'STEP' };
+  }
+  if (format === 'IGES') {
+    const buf = await file.arrayBuffer();
+    const geom = await parseStepIgesBrep(new Uint8Array(buf), 'iges', linearUnit, onProgress);
+    return { geom, format: 'IGES' };
+  }
+  if (format === 'BREP') {
+    const buf = await file.arrayBuffer();
+    const geom = await parseStepIgesBrep(new Uint8Array(buf), 'brep', null, onProgress);
+    return { geom, format: 'BREP' };
+  }
+  throw new Error(`Unsupported file type: ${format}.`);
+}
+
+/* ============================================================
+   GEOMETRY POST-PROCESSING
+   Once we have positions from any format, prepare the geometry
+   for rendering and measurement: merge duplicates, compute
+   normals, center (optionally), compute bbox/bsphere.
+   ============================================================ */
+
+function computeFaceNormals(geom) {
+  // One flat normal per triangle, replicated to its three vertices. This
+  // gives hard-edge shading that reads correctly for mechanical parts.
+  const pos = geom.attributes.position;
+  const count = pos.count;
+  const out = new Float32Array(count * 3);
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), nv = new THREE.Vector3();
+  const triCount = Math.floor(count / 3);
+  for (let t = 0; t < triCount; t++) {
+    const i = t * 3;
+    va.set(pos.getX(i),     pos.getY(i),     pos.getZ(i));
+    vb.set(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+    vc.set(pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+    e1.subVectors(vb, va); e2.subVectors(vc, va);
+    nv.crossVectors(e1, e2);
+    if (nv.lengthSq() > 0) nv.normalize();
+    else nv.set(0, 0, 1); // degenerate triangle fallback
+    for (let v = 0; v < 3; v++) {
+      out[(i + v) * 3]     = nv.x;
+      out[(i + v) * 3 + 1] = nv.y;
+      out[(i + v) * 3 + 2] = nv.z;
+    }
+  }
+  geom.setAttribute('normal', new THREE.BufferAttribute(out, 3));
+}
+
+function postProcessGeometry(geom, opts = {}) {
+  const { center = true, normalize = true } = opts;
+
+  if (!geom.attributes.normal) {
+    // For engineering parts we want flat shading (face normals) rather than
+    // smooth shading (vertex-averaged normals). Smooth shading over hard
+    // edges averages across faces and produces weirdly dark patches that
+    // hide features. Face normals — one normal per triangle, replicated to
+    // its three vertices — render CAD parts cleanly with visible edges.
+    computeFaceNormals(geom);
+  }
+
+  geom.computeBoundingBox();
+  geom.computeBoundingSphere();
+
+  if (center) {
+    const c = new THREE.Vector3();
+    geom.boundingBox.getCenter(c);
+    geom.translate(-c.x, -c.y, -c.z);
+    geom.computeBoundingBox();
+    geom.computeBoundingSphere();
+  }
+
+  if (normalize) {
+    // Scale so the bounding sphere radius is ~2 (matches our sample parts'
+    // rough size). This makes camera distance and snap tolerances predictable
+    // regardless of the file's original unit scale.
+    const r = geom.boundingSphere.radius;
+    if (r > 0) {
+      const scale = 2 / r;
+      geom.scale(scale, scale, scale);
+      // Remember the inverse scale so we can report measurements in original units
+      geom.userData.scaleFactor = 1 / scale;
+      geom.computeBoundingBox();
+      geom.computeBoundingSphere();
+    } else {
+      geom.userData.scaleFactor = 1;
+    }
+  } else {
+    geom.userData.scaleFactor = 1;
+  }
+
+  return geom;
+}
+
+/* ============================================================
+   FEATURE-AWARE SNAP EXTRACTION
+   Different formats produce very different vertex sets:
+     - STL triangulates the surface, so every "corner" vertex may
+       appear 6+ times (once per incident triangle) with floating-
+       point drift.
+     - OBJ has explicit vertices that are usually shared — less
+       dedup needed, but fan-triangulation of n-gons produces
+       duplicate references.
+     - Both produce vertices along curves that aren't true corners.
+   We want snap points that are topologically meaningful:
+     - Convex/concave "hard edges" (dihedral angle > threshold)
+     - Endpoints of those hard edges (true corners)
+     - Face centers of large planar regions
+     - Bounding box corners + centers
+   ============================================================ */
+
+function extractSnapPointsForMesh(geometry) {
+  const pos = geometry.attributes.position;
+  const n = pos.count;
+  if (n === 0) return [];
+
+  // Adaptive precision based on bounding sphere radius.
+  const bs = geometry.boundingSphere;
+  const scale = bs ? bs.radius : 1;
+  // Round to ~1/1000th of the radius — small enough not to merge distinct
+  // corners, large enough to collapse floating-point drift.
+  const precision = Math.max(scale / 1000, 1e-6);
+  const snap = (v) => Math.round(v / precision) * precision;
+  const keyOf = (x, y, z) => `${snap(x)}|${snap(y)}|${snap(z)}`;
+
+  // --- Pass 1: collect unique vertices and which triangle(s) touch each
+  const unique = new Map(); // key -> { point, triangles: Set<triIndex> }
+
+  const triCount = Math.floor(n / 3);
+  for (let t = 0; t < triCount; t++) {
+    for (let v = 0; v < 3; v++) {
+      const i = t * 3 + v;
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const k = keyOf(x, y, z);
+      let entry = unique.get(k);
+      if (!entry) {
+        entry = { point: new THREE.Vector3(snap(x), snap(y), snap(z)), triangles: new Set() };
+        unique.set(k, entry);
+      }
+      entry.triangles.add(t);
+    }
+  }
+
+  // --- Pass 2: per-triangle face normals (for dihedral-angle test)
+  const triNormals = new Float32Array(triCount * 3);
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), nv = new THREE.Vector3();
+  for (let t = 0; t < triCount; t++) {
+    const i = t * 3;
+    va.set(pos.getX(i),     pos.getY(i),     pos.getZ(i));
+    vb.set(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+    vc.set(pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+    e1.subVectors(vb, va); e2.subVectors(vc, va);
+    nv.crossVectors(e1, e2);
+    if (nv.lengthSq() > 0) nv.normalize();
+    triNormals[t * 3]     = nv.x;
+    triNormals[t * 3 + 1] = nv.y;
+    triNormals[t * 3 + 2] = nv.z;
+  }
+
+  // --- Pass 3: classify each unique vertex as a corner or not.
+  // A corner has incident triangles whose normals span a wide angular range.
+  // If all incident triangles are nearly coplanar, the vertex is on a flat
+  // face and not useful as a snap point (unless it's a hard edge, but we
+  // detect those by looking at *pairs* of normals, not a corner test).
+  const snapPoints = [];
+  const na = new THREE.Vector3(), nb = new THREE.Vector3();
+  unique.forEach((entry) => {
+    const tris = Array.from(entry.triangles);
+    if (tris.length <= 1) {
+      // Boundary vertex — always a corner (edge of an open mesh)
+      snapPoints.push(entry.point);
+      return;
+    }
+    // Find max angle between any pair of incident normals
+    let maxAngle = 0;
+    for (let i = 0; i < tris.length; i++) {
+      const ti = tris[i] * 3;
+      na.set(triNormals[ti], triNormals[ti + 1], triNormals[ti + 2]);
+      for (let j = i + 1; j < tris.length; j++) {
+        const tj = tris[j] * 3;
+        nb.set(triNormals[tj], triNormals[tj + 1], triNormals[tj + 2]);
+        const dot = Math.max(-1, Math.min(1, na.dot(nb)));
+        const ang = Math.acos(dot);
+        if (ang > maxAngle) maxAngle = ang;
+      }
+    }
+    // Threshold: ~25 degrees. Below this the vertex sits on a smooth/flat
+    // surface; above, it's a hard feature corner.
+    const ANGLE_THRESHOLD = (25 * Math.PI) / 180;
+    if (maxAngle > ANGLE_THRESHOLD) {
+      snapPoints.push(entry.point);
+    }
+  });
+
+  // Cap: if feature detection yields too few OR too many, fall back gracefully
+  if (snapPoints.length < 4) {
+    // File may be too smooth/curved — include all unique vertices
+    unique.forEach(e => snapPoints.push(e.point));
+  } else if (snapPoints.length > 3000) {
+    // Extremely dense file — keep every Nth point to stay performant
+    const stride = Math.ceil(snapPoints.length / 3000);
+    const sampled = [];
+    for (let i = 0; i < snapPoints.length; i += stride) sampled.push(snapPoints[i]);
+    snapPoints.length = 0;
+    snapPoints.push(...sampled);
+  }
+
+  // Always add bounding box corners + face centers + centroid
+  const bb = geometry.boundingBox;
+  if (bb) {
+    const cx = (bb.min.x + bb.max.x) / 2;
+    const cy = (bb.min.y + bb.max.y) / 2;
+    const cz = (bb.min.z + bb.max.z) / 2;
+    const corners = [
+      [bb.min.x, bb.min.y, bb.min.z], [bb.max.x, bb.min.y, bb.min.z],
+      [bb.min.x, bb.max.y, bb.min.z], [bb.max.x, bb.max.y, bb.min.z],
+      [bb.min.x, bb.min.y, bb.max.z], [bb.max.x, bb.min.y, bb.max.z],
+      [bb.min.x, bb.max.y, bb.max.z], [bb.max.x, bb.max.y, bb.max.z],
+    ];
+    corners.forEach(c => snapPoints.push(new THREE.Vector3(...c)));
+    snapPoints.push(
+      new THREE.Vector3(bb.min.x, cy, cz), new THREE.Vector3(bb.max.x, cy, cz),
+      new THREE.Vector3(cx, bb.min.y, cz), new THREE.Vector3(cx, bb.max.y, cz),
+      new THREE.Vector3(cx, cy, bb.min.z), new THREE.Vector3(cx, cy, bb.max.z),
+      new THREE.Vector3(cx, cy, cz),
+    );
+  }
+
+  return snapPoints;
+}
+
+/* ============================================================
+   AUTOMATIC FEATURE MEASUREMENT DETECTION
+   Scans the mesh for:
+     - Circular holes / cylindrical shafts (triangle vertex loops
+       on a common axis with consistent radius)
+     - Parallel planar face pairs (wall thickness / slab dims)
+     - Longest characteristic edge
+   Returns an array of { label, value, axis?, from?, to? }
+   ============================================================ */
+
+function detectFeatureMeasurements(geometry) {
+  const measurements = [];
+  const scaleFactor = geometry.userData.scaleFactor || 1;
+
+  // 1. Bounding box dimensions (always useful)
+  const bb = geometry.boundingBox;
+  if (bb) {
+    measurements.push({
+      label: 'Overall width (X)',
+      value: (bb.max.x - bb.min.x) * scaleFactor,
+      category: 'bbox',
+    });
+    measurements.push({
+      label: 'Overall height (Y)',
+      value: (bb.max.y - bb.min.y) * scaleFactor,
+      category: 'bbox',
+    });
+    measurements.push({
+      label: 'Overall depth (Z)',
+      value: (bb.max.z - bb.min.z) * scaleFactor,
+      category: 'bbox',
+    });
+  }
+
+  // 2. Parallel planar-face detection (slab / wall thickness)
+  //    Group triangles by normal direction (within tolerance). For each
+  //    axis-aligned group, find pairs of planes at different offsets.
+  //    This catches the "thickness" of plate-like parts cleanly.
+  const axisGroups = detectAxisAlignedPlaneSpacings(geometry);
+  axisGroups.forEach(g => {
+    if (g.spacing > 0) {
+      measurements.push({
+        label: `Thickness along ${g.axis}`,
+        value: g.spacing * scaleFactor,
+        category: 'thickness',
+        axis: g.axis,
+      });
+    }
+  });
+
+  // 3. Circular feature detection (holes and cylinders)
+  const circles = detectCircularFeatures(geometry);
+  circles.forEach((c, i) => {
+    measurements.push({
+      label: `${c.kind} ⌀ #${i + 1}`,
+      value: c.diameter * scaleFactor,
+      category: 'circle',
+      axis: c.axis,
+    });
+  });
+
+  // 4. Longest characteristic edge — gives user a sense of max span
+  //    (useful for irregular parts without obvious thickness).
+  const longestEdge = findLongestFeatureEdge(geometry);
+  if (longestEdge && longestEdge.length > 0) {
+    measurements.push({
+      label: 'Longest feature edge',
+      value: longestEdge.length * scaleFactor,
+      category: 'edge',
+    });
+  }
+
+  return measurements;
+}
+
+function detectAxisAlignedPlaneSpacings(geometry) {
+  // Walk each triangle, check if its normal is near-parallel to ±X, ±Y, ±Z.
+  // If so, record the offset (triangle centroid's dot with axis). Cluster
+  // offsets and report the spacing between the widest pair per axis.
+  const pos = geometry.attributes.position;
+  const triCount = Math.floor(pos.count / 3);
+  const axisOffsets = { X: [], Y: [], Z: [] };
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), nv = new THREE.Vector3();
+
+  for (let t = 0; t < triCount; t++) {
+    const i = t * 3;
+    va.set(pos.getX(i),     pos.getY(i),     pos.getZ(i));
+    vb.set(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+    vc.set(pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+    e1.subVectors(vb, va); e2.subVectors(vc, va);
+    nv.crossVectors(e1, e2);
+    const area = nv.length() * 0.5;
+    if (area < 1e-6) continue;
+    nv.multiplyScalar(1 / (area * 2));
+
+    const ax = Math.abs(nv.x), ay = Math.abs(nv.y), az = Math.abs(nv.z);
+    const centroid = {
+      x: (va.x + vb.x + vc.x) / 3,
+      y: (va.y + vb.y + vc.y) / 3,
+      z: (va.z + vb.z + vc.z) / 3,
+    };
+    // A plane is axis-aligned if one axis dominates (>0.97).
+    if (ax > 0.97)      axisOffsets.X.push({ offset: centroid.x, area });
+    else if (ay > 0.97) axisOffsets.Y.push({ offset: centroid.y, area });
+    else if (az > 0.97) axisOffsets.Z.push({ offset: centroid.z, area });
+  }
+
+  const result = [];
+  for (const axis of ['X', 'Y', 'Z']) {
+    const entries = axisOffsets[axis];
+    if (entries.length < 6) continue; // need enough signal
+    // Cluster offsets — a plane is a group of triangles with the same offset
+    // (within a small tolerance relative to the bounding span).
+    const bb = geometry.boundingBox;
+    const span = axis === 'X' ? bb.max.x - bb.min.x
+               : axis === 'Y' ? bb.max.y - bb.min.y
+               : bb.max.z - bb.min.z;
+    const tol = span * 0.005;
+    entries.sort((a, b) => a.offset - b.offset);
+    const clusters = [];
+    let cluster = { offset: entries[0].offset, totalArea: entries[0].area };
+    for (let i = 1; i < entries.length; i++) {
+      if (entries[i].offset - cluster.offset < tol) {
+        // Update weighted centroid of the cluster
+        cluster.offset = (cluster.offset * cluster.totalArea + entries[i].offset * entries[i].area)
+                       / (cluster.totalArea + entries[i].area);
+        cluster.totalArea += entries[i].area;
+      } else {
+        clusters.push(cluster);
+        cluster = { offset: entries[i].offset, totalArea: entries[i].area };
+      }
+    }
+    clusters.push(cluster);
+    // Keep only clusters with significant surface area (reject speckles)
+    const significant = clusters.filter(c => c.totalArea > span * span * 0.02);
+    if (significant.length < 2) continue;
+    // Report the spacing between the outermost pair (most informative thickness)
+    significant.sort((a, b) => a.offset - b.offset);
+    const spacing = significant[significant.length - 1].offset - significant[0].offset;
+    result.push({ axis, spacing });
+  }
+  return result;
+}
+
+function detectCircularFeatures(geometry) {
+  // Circular features in tessellated meshes show up as fans or rings of
+  // triangles whose vertices share a common axis line and a consistent
+  // distance from it. We sample vertices, try to detect axis-aligned
+  // cylinders (the common case after post-processing with axis-aligned
+  // bounding boxes), and cluster by (axis, axial position, radius).
+  //
+  // Heuristic, not topological: we only detect circular loops whose axes
+  // are near-axis-aligned. Good enough for the majority of engineering
+  // parts (holes are almost always perpendicular to a face).
+
+  const pos = geometry.attributes.position;
+  const bb = geometry.boundingBox;
+  if (!bb) return [];
+
+  // Dedup vertices (they repeat across triangles)
+  const seen = new Map();
+  const verts = [];
+  const precision = geometry.boundingSphere.radius / 2000;
+  const snapVal = (v) => Math.round(v / precision) * precision;
+  for (let i = 0; i < pos.count; i++) {
+    const x = snapVal(pos.getX(i));
+    const y = snapVal(pos.getY(i));
+    const z = snapVal(pos.getZ(i));
+    const k = `${x}|${y}|${z}`;
+    if (!seen.has(k)) {
+      seen.set(k, true);
+      verts.push([x, y, z]);
+    }
+  }
+
+  // For each axis, cluster vertices by their slice along the axis, then
+  // check if the remaining 2D projection forms a circle.
+  const bins = geometry.boundingSphere.radius * 0.03; // slice thickness
+  const results = [];
+
+  for (const axisName of ['X', 'Y', 'Z']) {
+    const [ai, pi, qi] = axisName === 'X' ? [0, 1, 2]
+                      : axisName === 'Y' ? [1, 0, 2]
+                      :                     [2, 0, 1];
+
+    // Bin by axial coordinate
+    const binMap = new Map();
+    verts.forEach(v => {
+      const b = Math.round(v[ai] / bins);
+      if (!binMap.has(b)) binMap.set(b, []);
+      binMap.get(b).push(v);
+    });
+
+    binMap.forEach((points, binKey) => {
+      if (points.length < 10) return;
+
+      // Points in a Z-bin may contain MULTIPLE disjoint features: box corners,
+      // a hole ring, a boss, etc. A single circle fit across all of them
+      // picks up noise. Solution: spatially cluster the 2D projection first,
+      // then try a circle fit on each cluster independently.
+      const pts2d = points.map(v => [v[pi], v[qi]]);
+      const bsRadius = geometry.boundingSphere.radius;
+      // Cluster distance threshold: points within 8% of the part's bounding
+      // radius are considered connected. Tight enough to isolate a small
+      // hole, loose enough to keep a circle's sample points connected.
+      const clusterDist = bsRadius * 0.08;
+      const clusters = spatialCluster2D(pts2d, clusterDist);
+
+      clusters.forEach(cluster => {
+        if (cluster.length < 8) return;
+
+        // Filter to rim points: use median distance from cluster centroid,
+        // drop interior/outlier points
+        const cx0 = cluster.reduce((s, p) => s + p[0], 0) / cluster.length;
+        const cy0 = cluster.reduce((s, p) => s + p[1], 0) / cluster.length;
+        const dists = cluster.map(p => Math.hypot(p[0] - cx0, p[1] - cy0));
+        const sortedDists = [...dists].sort((a, b) => a - b);
+        const medianR = sortedDists[Math.floor(sortedDists.length / 2)];
+        if (medianR < bsRadius * 0.005) return; // cluster is a point blob, not a ring
+        const rimPts = cluster.filter((_, idx) =>
+          dists[idx] > medianR * 0.75 && dists[idx] < medianR * 1.25
+        );
+        if (rimPts.length < 8) return;
+
+        const fit = fitCircle2D(rimPts);
+        if (!fit) return;
+        if (fit.residual > fit.radius * 0.03) return;
+        if (fit.radius < bsRadius * 0.005) return;
+        if (fit.radius > bsRadius * 0.6) return;
+
+        // Angular coverage check: samples must wrap around the circle
+        const angles = rimPts.map(v => Math.atan2(v[1] - fit.cy, v[0] - fit.cx));
+        angles.sort((a, b) => a - b);
+        let maxGap = (angles[0] + 2 * Math.PI) - angles[angles.length - 1];
+        for (let k = 1; k < angles.length; k++) {
+          const g = angles[k] - angles[k - 1];
+          if (g > maxGap) maxGap = g;
+        }
+        if (maxGap > Math.PI / 2) return;
+
+        results.push({
+          kind: 'Circle',
+          diameter: fit.radius * 2,
+          axis: axisName,
+          center: { [pi === 0 ? 'x' : pi === 1 ? 'y' : 'z']: fit.cx,
+                    [qi === 0 ? 'x' : qi === 1 ? 'y' : 'z']: fit.cy,
+                    [ai === 0 ? 'x' : ai === 1 ? 'y' : 'z']: binKey * bins },
+          samples: rimPts.length,
+        });
+      });
+    });
+  }
+
+  // Dedup overlapping detections (same feature picked up in multiple bins)
+  const dedup = [];
+  const RADIUS_MATCH = 0.05;
+  results.forEach(r => {
+    const match = dedup.find(d =>
+      d.axis === r.axis &&
+      Math.abs(d.diameter - r.diameter) / Math.max(d.diameter, r.diameter) < RADIUS_MATCH
+    );
+    if (match) {
+      // Keep the one with more samples
+      if (r.samples > match.samples) Object.assign(match, r);
+    } else {
+      dedup.push(r);
+    }
+  });
+
+  // Keep only most prominent (up to 5)
+  dedup.sort((a, b) => b.samples - a.samples);
+  return dedup.slice(0, 5);
+}
+
+function spatialCluster2D(points, maxDist) {
+  // Union-find based 2D clustering. Two points are "connected" if they're
+  // within maxDist. Returns an array of clusters (each a subset of points).
+  //
+  // For small point counts (< a few hundred per bin) this O(n²) is fine; we
+  // don't need a KD-tree here.
+  const n = points.length;
+  const parent = new Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+  function union(i, j) { const ri = find(i), rj = find(j); if (ri !== rj) parent[ri] = rj; }
+
+  const maxSq = maxDist * maxDist;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const dx = points[i][0] - points[j][0];
+      const dy = points[i][1] - points[j][1];
+      if (dx * dx + dy * dy <= maxSq) union(i, j);
+    }
+  }
+
+  const groups = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(points[i]);
+  }
+  return Array.from(groups.values());
+}
+
+function fitCircle2D(points) {
+  // Least-squares circle fit (Kasa method). Simple and fast.
+  const n = points.length;
+  if (n < 3) return null;
+  let sumX = 0, sumY = 0, sumXX = 0, sumYY = 0, sumXY = 0;
+  let sumX3 = 0, sumY3 = 0, sumXY2 = 0, sumX2Y = 0;
+  points.forEach(([x, y]) => {
+    sumX += x; sumY += y;
+    sumXX += x * x; sumYY += y * y; sumXY += x * y;
+    sumX3 += x * x * x; sumY3 += y * y * y;
+    sumXY2 += x * y * y; sumX2Y += x * x * y;
+  });
+  const A = n * sumXX - sumX * sumX;
+  const B = n * sumXY - sumX * sumY;
+  const C = n * sumYY - sumY * sumY;
+  const D = 0.5 * (n * sumXY2 - sumX * sumYY + n * sumX3 - sumX * sumXX);
+  const E = 0.5 * (n * sumX2Y - sumY * sumXX + n * sumY3 - sumY * sumYY);
+  const denom = A * C - B * B;
+  if (Math.abs(denom) < 1e-12) return null;
+  const cx = (D * C - B * E) / denom;
+  const cy = (A * E - B * D) / denom;
+  let meanR = 0;
+  points.forEach(([x, y]) => { meanR += Math.hypot(x - cx, y - cy); });
+  meanR /= n;
+  let residual = 0;
+  points.forEach(([x, y]) => {
+    const d = Math.hypot(x - cx, y - cy) - meanR;
+    residual += d * d;
+  });
+  residual = Math.sqrt(residual / n);
+  return { cx, cy, radius: meanR, residual };
+}
+
+function findLongestFeatureEdge(geometry) {
+  // Walk unique "hard edges" — edges shared by exactly two triangles
+  // whose normals differ by more than a threshold. Return the longest.
+  const pos = geometry.attributes.position;
+  const triCount = Math.floor(pos.count / 3);
+  if (triCount === 0) return null;
+
+  const precision = geometry.boundingSphere.radius / 2000;
+  const snapVal = (v) => Math.round(v / precision) * precision;
+  const keyOf = (x, y, z) => `${snapVal(x)}|${snapVal(y)}|${snapVal(z)}`;
+
+  // Map edge key (sorted vertex keys) -> { triangles: [], vertices: [] }
+  const edgeMap = new Map();
+  const triNormal = new Array(triCount);
+
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+
+  for (let t = 0; t < triCount; t++) {
+    const i = t * 3;
+    va.set(pos.getX(i),     pos.getY(i),     pos.getZ(i));
+    vb.set(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+    vc.set(pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+    e1.subVectors(vb, va); e2.subVectors(vc, va);
+    const n = new THREE.Vector3().crossVectors(e1, e2);
+    if (n.lengthSq() > 0) n.normalize();
+    triNormal[t] = n;
+
+    const kA = keyOf(va.x, va.y, va.z);
+    const kB = keyOf(vb.x, vb.y, vb.z);
+    const kC = keyOf(vc.x, vc.y, vc.z);
+    const edges = [
+      { k1: kA, k2: kB, v1: va.clone(), v2: vb.clone() },
+      { k1: kB, k2: kC, v1: vb.clone(), v2: vc.clone() },
+      { k1: kC, k2: kA, v1: vc.clone(), v2: va.clone() },
+    ];
+    edges.forEach(e => {
+      const key = e.k1 < e.k2 ? `${e.k1}|${e.k2}` : `${e.k2}|${e.k1}`;
+      let entry = edgeMap.get(key);
+      if (!entry) {
+        entry = { triangles: [], v1: e.v1, v2: e.v2 };
+        edgeMap.set(key, entry);
+      }
+      entry.triangles.push(t);
+    });
+  }
+
+  let best = null;
+  edgeMap.forEach(entry => {
+    if (entry.triangles.length !== 2) return;
+    const [t1, t2] = entry.triangles;
+    const dot = Math.max(-1, Math.min(1, triNormal[t1].dot(triNormal[t2])));
+    const ang = Math.acos(dot);
+    if (ang < (20 * Math.PI / 180)) return; // smooth — not a feature edge
+    const len = entry.v1.distanceTo(entry.v2);
+    if (!best || len > best.length) best = { length: len, v1: entry.v1, v2: entry.v2 };
+  });
+  return best;
+}
+
+
+/* ---------- Init Three.js ---------- */
+function initThree() {
+  const w = mount.clientWidth, h = mount.clientHeight;
+
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(40, w / h, 0.01, 1000);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  renderer.localClippingEnabled = true;
+  renderer.setClearColor(0x000000, 0);
+  mount.appendChild(renderer.domElement);
+
+  // Lighting
+  scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+  const key = new THREE.DirectionalLight(0xffffff, 1.1);
+  key.position.set(5, 8, 6); scene.add(key);
+  const fill = new THREE.DirectionalLight(0x88aaff, 0.35);
+  fill.position.set(-6, 2, -4); scene.add(fill);
+  const rim = new THREE.DirectionalLight(0x0066ff, 0.4);
+  rim.position.set(0, -5, -8); scene.add(rim);
+
+  clipPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
+
+  rebuildMesh();
+  animate();
+
+  window.addEventListener('resize', onResize);
+}
+
+function onResize() {
+  const w = mount.clientWidth, h = mount.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+
+function rebuildMesh() {
+  // cleanup existing meshes
+  if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); mesh = null; }
+  if (wireframe) { scene.remove(wireframe); wireframe.geometry.dispose(); wireframe.material.dispose(); wireframe = null; }
+  if (sectionWire) { scene.remove(sectionWire); sectionWire.geometry.dispose(); sectionWire.material.dispose(); sectionWire = null; }
+  if (gridHelper) { scene.remove(gridHelper); gridHelper = null; }
+
+  const part = activePart();
+  if (!part) {
+    // No parts loaded — clear dependent UI and return. The empty-state
+    // overlay in the viewport handles the visual cue.
+    snapPoints = [];
+    state.pendingPoint = null;
+    updateMeasList();
+    updateFeaturesList();
+    updateBoundingBox();
+    updateEmptyState();
+    return;
+  }
+
+  // Clone the part's geometry so the cached master isn't mutated.
+  const geom = part.geom.clone();
+  if (!geom.boundingBox) geom.computeBoundingBox();
+  if (!geom.boundingSphere) geom.computeBoundingSphere();
+  if (!geom.attributes.normal) computeFaceNormals(geom);
+  geom.userData.scaleFactor = part.geom.userData.scaleFactor || 1;
+
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(part.color || '#c8ccd2'),
+    metalness: 0.25,
+    roughness: 0.55,
+    clearcoat: 0.25,
+    clearcoatRoughness: 0.5,
+    clippingPlanes: state.sectionEnabled ? [clipPlane] : [],
+    side: THREE.DoubleSide,
+  });
+  mesh = new THREE.Mesh(geom, mat);
+  scene.add(mesh);
+
+  // Edge wireframe — threshold of 25° separates hard edges from smooth curves.
+  const edges = new THREE.EdgesGeometry(geom, 25);
+  const wireMat = new THREE.LineBasicMaterial({
+    color: 0x0066ff, transparent: true,
+    opacity: state.showWireframe ? 0.85 : 0.12,
+    clippingPlanes: state.sectionEnabled ? [clipPlane] : [],
+  });
+  wireframe = new THREE.LineSegments(edges, wireMat);
+  scene.add(wireframe);
+
+  const sectionWireMat = new THREE.LineBasicMaterial({
+    color: 0x0066ff, transparent: true, opacity: 0.25,
+  });
+  sectionWire = new THREE.LineSegments(edges.clone(), sectionWireMat);
+  sectionWire.visible = state.sectionEnabled;
+  scene.add(sectionWire);
+
+  if (state.showGrid) {
+    gridHelper = new THREE.GridHelper(20, 40, 0x0066ff, 0x333333);
+    gridHelper.position.y = geom.boundingBox.min.y - 0.01;
+    gridHelper.material.opacity = 0.18;
+    gridHelper.material.transparent = true;
+    scene.add(gridHelper);
+  }
+
+  // Use cached snap points & auto-measurements if they exist on the part;
+  // otherwise compute now and cache on the part object.
+  if (!part.snapPoints) part.snapPoints = extractSnapPointsForMesh(geom);
+  snapPoints = part.snapPoints;
+
+  if (!part.autoMeasurements || part.autoMeasurements.length === 0) {
+    part.autoMeasurements = detectFeatureMeasurements(geom);
+  }
+
+  state.pendingPoint = null;
+
+  const bs = geom.boundingSphere;
+  sceneState.targetDistance = Math.max(5, bs.radius * 3.5);
+  sceneState.targetPanX = 0; sceneState.targetPanY = 0;
+
+  // update section slider bounds
+  updateSectionBounds();
+  updateBoundingBox();
+  updateMeasList();
+  updateFeaturesList();
+  updateEmptyState();
+  updateColorSwatches();
+  updatePartsDropdown();
+}
+
+// Toggle the in-viewport empty-state overlay
+function updateEmptyState() {
+  const el = document.getElementById('empty-state');
+  if (!el) return;
+  el.style.display = state.parts.length === 0 ? 'flex' : 'none';
+}
+
+function updateSectionBounds() {
+  if (!mesh) return;
+  const bb = mesh.geometry.boundingBox;
+  const slider = document.getElementById('section-slider');
+  let min, max;
+  if (state.sectionAxis === 'x') { min = bb.min.x; max = bb.max.x; }
+  else if (state.sectionAxis === 'y') { min = bb.min.y; max = bb.max.y; }
+  else { min = bb.min.z; max = bb.max.z; }
+  slider.min = min; slider.max = max;
+  slider.step = (max - min) / 200;
+  if (state.sectionPos < min || state.sectionPos > max) {
+    state.sectionPos = (min + max) / 2;
+    slider.value = state.sectionPos;
+  }
+  const sf = mesh.geometry.userData.scaleFactor || 1;
+  document.getElementById('section-val').textContent = `${(state.sectionPos * sf).toFixed(2)} ${state.units}`;
+}
+
+function updateBoundingBox() {
+  if (!mesh) {
+    // No part loaded — show placeholder dashes
+    const axes = ['X', 'Y', 'Z'];
+    document.getElementById('bbox-grid').innerHTML = axes.map(ax =>
+      `<div class="bbox-cell"><div class="bbox-axis">${ax}</div><div class="bbox-val" style="opacity:0.3">—</div><div class="bbox-unit">${state.units}</div></div>`
+    ).join('');
+    return;
+  }
+  const bb = mesh.geometry.boundingBox;
+  const sf = mesh.geometry.userData.scaleFactor || 1;
+  const dims = [
+    ['X', (bb.max.x - bb.min.x) * sf],
+    ['Y', (bb.max.y - bb.min.y) * sf],
+    ['Z', (bb.max.z - bb.min.z) * sf],
+  ];
+  document.getElementById('bbox-grid').innerHTML = dims.map(([ax, v]) =>
+    `<div class="bbox-cell"><div class="bbox-axis">${ax}</div><div class="bbox-val">${v.toFixed(2)}</div><div class="bbox-unit">${state.units}</div></div>`
+  ).join('');
+}
+
+// Feature category icons
+const FEATURE_ICONS = {
+  bbox: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>',
+  thickness: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 17h16"/><path d="M7 7v10"/><path d="M17 7v10"/></svg>',
+  circle: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>',
+  edge: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><circle cx="5" cy="19" r="1.5" fill="currentColor"/><circle cx="19" cy="5" r="1.5" fill="currentColor"/></svg>',
+};
+
+function updateFeaturesList() {
+  const list = document.getElementById('features-list');
+  const count = document.getElementById('features-count');
+  const items = state.autoMeasurements || [];
+  // Skip the three bbox entries from the on-screen list (they're shown in the
+  // BOUNDING BOX card already) but keep them in state for the PDF.
+  const display = items.filter(i => i.category !== 'bbox');
+  count.textContent = display.length;
+
+  if (display.length === 0) {
+    list.innerHTML = '<div class="feature-empty">No features detected on this part</div>';
+    return;
+  }
+  list.innerHTML = display.map(f => {
+    const icon = FEATURE_ICONS[f.category] || FEATURE_ICONS.bbox;
+    return `<div class="feature-item">
+      <div class="feature-icon">${icon}</div>
+      <div class="feature-label">${escapeHtml(f.label)}</div>
+      <div class="feature-val">${f.value.toFixed(2)}<span class="unit">${state.units}</span></div>
+    </div>`;
+  }).join('');
+}
+
+/* ---------- Animation loop ---------- */
+function animate() {
+  requestAnimationFrame(animate);
+  const s = sceneState;
+  s.rotX += (s.targetRotX - s.rotX) * 0.18;
+  s.rotY += (s.targetRotY - s.rotY) * 0.18;
+  s.distance += (s.targetDistance - s.distance) * 0.18;
+  s.panX += (s.targetPanX - s.panX) * 0.18;
+  s.panY += (s.targetPanY - s.panY) * 0.18;
+
+  if (state.autoRotate) {
+    s.targetRotY += 0.004; s.rotY += 0.004;
+  }
+
+  const x = Math.cos(s.rotX) * Math.sin(s.rotY) * s.distance;
+  const y = Math.sin(s.rotX) * s.distance;
+  const z = Math.cos(s.rotX) * Math.cos(s.rotY) * s.distance;
+  camera.position.set(x + s.panX, y + s.panY, z);
+  camera.lookAt(s.panX, s.panY, 0);
+
+  renderer.render(scene, camera);
+
+  // update zoom display + overlays
+  document.getElementById('zoom-val').textContent = Math.round((8 / s.distance) * 100) + '%';
+  renderOverlay();
+}
+
+/* ---------- Project 3D to screen ---------- */
+function projectToScreen(vec3) {
+  const v = vec3.clone().project(camera);
+  const rect = renderer.domElement.getBoundingClientRect();
+  return {
+    x: (v.x * 0.5 + 0.5) * rect.width,
+    y: (-v.y * 0.5 + 0.5) * rect.height,
+    z: v.z,
+  };
+}
+
+/* ---------- Overlay rendering ----------
+   SVG overlay (lines, dots, crosshair) rebuilds every frame — that's cheap.
+   HTML labels use STABLE DOM nodes that are created once per measurement and
+   only have their position/content updated per frame. This prevents click events
+   from being eaten mid-render. Button handling uses event delegation on the
+   container, so clicks work reliably even during animation.
+   ---------------------------------------- */
+
+const labelNodes = new Map(); // measurementId -> { root, nameInput, distSpan, lockBtn, delBtn }
+
+function getOrCreateLabelNode(m) {
+  let entry = labelNodes.get(m.id);
+  if (entry) return entry;
+
+  const root = document.createElement('div');
+  root.className = 'meas-label';
+  root.dataset.mid = m.id;
+
+  const nameInput = document.createElement('input');
+  nameInput.className = 'label-name';
+  nameInput.type = 'text';
+  nameInput.placeholder = 'label…';
+  nameInput.dataset.mid = m.id;
+  // prevent orbit drag from hijacking when editing
+  nameInput.addEventListener('pointerdown', e => e.stopPropagation());
+
+  const distSpan = document.createElement('span');
+  distSpan.className = 'dist-span';
+
+  const lockBtn = document.createElement('button');
+  lockBtn.className = 'lock-btn';
+  lockBtn.dataset.mid = m.id;
+  lockBtn.dataset.action = 'lock';
+  lockBtn.title = 'Lock';
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'del-btn';
+  delBtn.dataset.mid = m.id;
+  delBtn.dataset.action = 'delete';
+  delBtn.title = 'Delete (or press Delete key)';
+
+  root.appendChild(nameInput);
+  root.appendChild(distSpan);
+  root.appendChild(lockBtn);
+  root.appendChild(delBtn);
+
+  // KEY FIX for the "X button doesn't always work" bug:
+  // When a pointerdown lands on any label button, freeze the label's position
+  // so the click target doesn't shift under the cursor while the user is
+  // pressing. Without this freeze, camera drift or the animation loop
+  // re-positions the label between pointerdown and pointerup, causing the
+  // click to land outside the button and get ignored.
+  //
+  // Also track hover so the Delete keyboard shortcut knows which measurement
+  // to remove.
+  root.addEventListener('pointerenter', () => { lastHoveredMeasId = m.id; });
+  root.addEventListener('pointerleave', () => {
+    if (lastHoveredMeasId === m.id) lastHoveredMeasId = null;
+  });
+
+  entry = { root, nameInput, distSpan, lockBtn, delBtn, frozen: false };
+  labelNodes.set(m.id, entry);
+  return entry;
+}
+
+// Track which measurement the cursor is over — used by keyboard shortcuts.
+let lastHoveredMeasId = null;
+
+// Which label is currently being interacted with (pointerdown held).
+// While set, renderOverlay() skips re-positioning that label so the click
+// target stays stationary.
+let frozenLabelId = null;
+
+const LOCK_OPEN_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>';
+const LOCK_CLOSED_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="0" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="currentColor" stroke-width="2.2" fill="none"/></svg>';
+const DELETE_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+
+function renderOverlay() {
+  const svg = document.getElementById('overlay-svg');
+  const html = document.getElementById('overlay-html');
+  const rect = renderer.domElement.getBoundingClientRect();
+  svg.setAttribute('width', rect.width);
+  svg.setAttribute('height', rect.height);
+
+  let svgContent = '';
+
+  // Track which label nodes are still in use this frame
+  const activeIds = new Set();
+
+  state.measurements.forEach(m => {
+    const a = projectToScreen(m.p1);
+    const b = projectToScreen(m.p2);
+    if (!a || !b || a.z > 1 || b.z > 1) return;
+
+    svgContent += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${BRAND.blue}" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+    svgContent += `<circle cx="${a.x}" cy="${a.y}" r="4" fill="${BRAND.blue}" stroke="white" stroke-width="1.5"/>`;
+    svgContent += `<circle cx="${b.x}" cy="${b.y}" r="4" fill="${BRAND.blue}" stroke="white" stroke-width="1.5"/>`;
+
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const entry = getOrCreateLabelNode(m);
+    activeIds.add(m.id);
+
+    // Position — but NOT if this label is currently being clicked. Freezing
+    // the position while pointerdown is held keeps the click target under
+    // the cursor so the X button etc. land reliably.
+    if (frozenLabelId !== m.id) {
+      entry.root.style.left = mx + 'px';
+      entry.root.style.top = my + 'px';
+    }
+
+    // Locked state (toggle class instead of rebuilding)
+    entry.root.classList.toggle('locked', !!m.locked);
+
+    // Distance text
+    entry.distSpan.textContent = `${m.dist.toFixed(2)} ${state.units}`;
+
+    // Only update input value if not currently focused (so we don't stomp typing)
+    if (document.activeElement !== entry.nameInput) {
+      if (entry.nameInput.value !== (m.name || '')) {
+        entry.nameInput.value = m.name || '';
+      }
+    }
+    // Show name input only if it has content OR is focused
+    const showName = (m.name && m.name.length > 0) || document.activeElement === entry.nameInput;
+    entry.nameInput.style.display = showName ? '' : 'none';
+
+    // Lock button icon reflects state
+    entry.lockBtn.innerHTML = m.locked ? LOCK_CLOSED_SVG : LOCK_OPEN_SVG;
+    entry.lockBtn.classList.toggle('is-locked', !!m.locked);
+    entry.lockBtn.title = m.locked ? 'Unlock' : 'Lock in place';
+
+    entry.delBtn.innerHTML = DELETE_SVG;
+
+    // Attach if not already
+    if (!entry.root.isConnected) html.appendChild(entry.root);
+  });
+
+  // Remove label nodes for deleted measurements
+  labelNodes.forEach((entry, id) => {
+    if (!activeIds.has(id)) {
+      if (entry.root.isConnected) entry.root.remove();
+      labelNodes.delete(id);
+    }
+  });
+
+  // pending point
+  if (state.pendingPoint) {
+    const p = projectToScreen(state.pendingPoint);
+    if (p && p.z <= 1) {
+      svgContent += `<circle cx="${p.x}" cy="${p.y}" r="6" fill="none" stroke="${BRAND.blue}" stroke-width="2">
+        <animate attributeName="r" values="4;10;4" dur="1.4s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="1;0.2;1" dur="1.4s" repeatCount="indefinite"/>
+      </circle>`;
+      svgContent += `<circle cx="${p.x}" cy="${p.y}" r="4" fill="${BRAND.blue}" stroke="white" stroke-width="1.5"/>`;
+    }
+  }
+
+  // hover snap
+  if (state.hoverSnap && state.tool === 'measure') {
+    const p = state.hoverSnap.screen;
+    svgContent += `<circle cx="${p.x}" cy="${p.y}" r="9" fill="none" stroke="${BRAND.blue}" stroke-width="1.5" opacity="0.7"/>`;
+    svgContent += `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${BRAND.blue}"/>`;
+    svgContent += `<line x1="${p.x - 14}" y1="${p.y}" x2="${p.x - 5}" y2="${p.y}" stroke="${BRAND.blue}" stroke-width="1"/>`;
+    svgContent += `<line x1="${p.x + 5}" y1="${p.y}" x2="${p.x + 14}" y2="${p.y}" stroke="${BRAND.blue}" stroke-width="1"/>`;
+    svgContent += `<line x1="${p.x}" y1="${p.y - 14}" x2="${p.x}" y2="${p.y - 5}" stroke="${BRAND.blue}" stroke-width="1"/>`;
+    svgContent += `<line x1="${p.x}" y1="${p.y + 5}" x2="${p.x}" y2="${p.y + 14}" stroke="${BRAND.blue}" stroke-width="1"/>`;
+  }
+
+  svg.innerHTML = svgContent;
+}
+
+// Event delegation for label buttons — the critical reliability fix.
+//
+// Bug symptom: clicks on the tiny X/lock buttons in measurement labels were
+// often ignored, because renderOverlay() repositions labels every animation
+// frame. Between pointerdown and pointerup, a tiny camera drift shifts the
+// label; if the cursor is still at its original pixel, the pointerup lands
+// on a different DOM element (the orbit canvas, the label's background, etc)
+// and the click event fires on the common ancestor — NOT the button — so our
+// handler doesn't trigger.
+//
+// Fix approach:
+//   1. On pointerdown on a label button, freeze that label's position.
+//      renderOverlay checks frozenLabelId and skips position updates for it.
+//   2. Capture the pointer on the button so we get pointerup even if the
+//      cursor drifts a few pixels.
+//   3. Fire the action on pointerup if it's still within the button's rect.
+//      This is more reliable than waiting for click, which requires the
+//      entire press+release to be within the same target.
+//   4. Always un-freeze on pointerup/pointercancel, whatever the outcome.
+
+const overlayHtml = document.getElementById('overlay-html');
+
+overlayHtml.addEventListener('pointerdown', (e) => {
+  const btn = e.target.closest('button[data-mid]');
+  const input = e.target.classList && e.target.classList.contains('label-name');
+  // Input editing — don't hijack
+  if (input) { e.stopPropagation(); return; }
+  if (!btn) return;
+
+  e.stopPropagation();
+  e.preventDefault();
+  const mid = Number(btn.dataset.mid);
+  frozenLabelId = mid;
+  // Capture so further pointer events fire on this button even after drift
+  try { btn.setPointerCapture(e.pointerId); } catch (err) {}
+  btn.dataset.pressActive = '1';
+}, true); // capture phase — run before any ancestor handler
+
+overlayHtml.addEventListener('pointerup', (e) => {
+  const btn = e.target.closest('button[data-mid]') || document.querySelector('button[data-mid][data-press-active="1"]');
+  if (!btn) { frozenLabelId = null; return; }
+  if (btn.dataset.pressActive !== '1') { frozenLabelId = null; return; }
+
+  e.stopPropagation();
+  const rect = btn.getBoundingClientRect();
+  // Only fire if pointerup is still over the button (with generous slop)
+  const SLOP = 8;
+  const inside =
+    e.clientX >= rect.left - SLOP && e.clientX <= rect.right + SLOP &&
+    e.clientY >= rect.top - SLOP && e.clientY <= rect.bottom + SLOP;
+
+  btn.dataset.pressActive = '';
+  try { btn.releasePointerCapture(e.pointerId); } catch (err) {}
+  frozenLabelId = null;
+
+  if (!inside) return;
+
+  const id = Number(btn.dataset.mid);
+  const action = btn.dataset.action;
+  if (action === 'lock') toggleLock(id);
+  else if (action === 'delete') deleteMeasurement(id);
+}, true);
+
+overlayHtml.addEventListener('pointercancel', () => {
+  frozenLabelId = null;
+  document.querySelectorAll('button[data-mid][data-press-active="1"]').forEach(b => {
+    b.dataset.pressActive = '';
+  });
+});
+
+overlayHtml.addEventListener('input', (e) => {
+  if (e.target.classList.contains('label-name')) {
+    const id = Number(e.target.dataset.mid);
+    const m = state.measurements.find(x => x.id === id);
+    if (m) {
+      m.name = e.target.value;
+      updateMeasList(); // sync with right panel
+    }
+  }
+});
+
+// Global keyboard shortcuts — Delete/Backspace deletes the measurement the
+// cursor is currently hovering over (in-viewport label or right-panel row).
+window.addEventListener('keydown', (e) => {
+  // Ignore when the user is typing in an input/textarea
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (lastHoveredMeasId != null) {
+      e.preventDefault();
+      deleteMeasurement(lastHoveredMeasId);
+    }
+  } else if (e.key === 'Escape') {
+    // cancel an in-progress measurement
+    if (state.pendingPoint) {
+      state.pendingPoint = null;
+      showToast('Measurement cancelled');
+    }
+  }
+});
+
+/* ---------- Measurement management ---------- */
+window.toggleLock = function(id) {
+  const m = state.measurements.find(x => x.id === id);
+  if (m) { m.locked = !m.locked; updateMeasList(); }
+};
+window.deleteMeasurement = function(id) {
+  state.measurements = state.measurements.filter(x => x.id !== id);
+  // Proactively remove the label node so it can't linger
+  const entry = labelNodes.get(id);
+  if (entry && entry.root.isConnected) entry.root.remove();
+  labelNodes.delete(id);
+  updateMeasList();
+};
+
+// Same stable-DOM approach for the right-panel list
+const listRowNodes = new Map(); // id -> { root, nameInput, distSpan, badgeSpan, lockBtn, delBtn }
+
+function createListRow(m, index) {
+  const root = document.createElement('div');
+  root.className = 'meas-item';
+
+  // Track hover so Delete key knows the target
+  root.addEventListener('pointerenter', () => { lastHoveredMeasId = m.id; });
+  root.addEventListener('pointerleave', () => {
+    if (lastHoveredMeasId === m.id) lastHoveredMeasId = null;
+  });
+
+  const badge = document.createElement('div');
+  badge.className = 'meas-badge';
+  badge.textContent = 'M' + (index + 1);
+
+  const body = document.createElement('div');
+  body.className = 'meas-body';
+
+  const nameInput = document.createElement('input');
+  nameInput.className = 'meas-label-input';
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Add label (e.g. "Hole dia")';
+  nameInput.value = m.name || '';
+  nameInput.addEventListener('input', () => {
+    m.name = nameInput.value;
+    // Update the in-canvas label too
+    const entry = labelNodes.get(m.id);
+    if (entry && document.activeElement !== entry.nameInput) {
+      entry.nameInput.value = m.name;
+    }
+  });
+
+  const dist = document.createElement('div');
+  dist.className = 'meas-dist';
+
+  body.appendChild(nameInput);
+  body.appendChild(dist);
+
+  const lockBtn = document.createElement('button');
+  lockBtn.className = 'mini-btn';
+  lockBtn.title = 'Lock';
+  lockBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleLock(m.id);
+  });
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'mini-btn danger';
+  delBtn.title = 'Delete (or press Delete key)';
+  delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  delBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteMeasurement(m.id);
+  });
+
+  root.appendChild(badge);
+  root.appendChild(body);
+  root.appendChild(lockBtn);
+  root.appendChild(delBtn);
+
+  return { root, nameInput, distSpan: dist, badgeSpan: badge, lockBtn, delBtn };
+}
+
+function updateMeasList() {
+  const list = document.getElementById('meas-list');
+  document.getElementById('meas-count').textContent = state.measurements.length;
+
+  if (state.measurements.length === 0) {
+    listRowNodes.forEach(entry => entry.root.remove());
+    listRowNodes.clear();
+    list.innerHTML = `<div class="meas-empty">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg>
+      <div>No measurements yet</div>
+      <div class="meas-empty-sub">Activate Measure tool, click two snap points</div>
+    </div>`;
+    return;
+  }
+
+  // Remove empty-state if present
+  const empty = list.querySelector('.meas-empty');
+  if (empty) list.innerHTML = '';
+
+  // Ensure clear-all button exists and is last
+  let clearBtn = list.querySelector('.clear-btn');
+
+  const activeIds = new Set();
+  state.measurements.forEach((m, i) => {
+    activeIds.add(m.id);
+    let entry = listRowNodes.get(m.id);
+    if (!entry) {
+      entry = createListRow(m, i);
+      listRowNodes.set(m.id, entry);
+      // Insert before the clear button (or at end)
+      if (clearBtn) list.insertBefore(entry.root, clearBtn);
+      else list.appendChild(entry.root);
+    }
+    // Update values without rebuilding
+    entry.badgeSpan.textContent = 'M' + (i + 1);
+    entry.distSpan.innerHTML = `${m.dist.toFixed(2)} <span class="unit">${state.units}</span>`;
+    entry.root.classList.toggle('locked', !!m.locked);
+    // Only update input if not focused
+    if (document.activeElement !== entry.nameInput && entry.nameInput.value !== (m.name || '')) {
+      entry.nameInput.value = m.name || '';
+    }
+    // Lock button visual — closed lock when locked, open when not
+    entry.lockBtn.classList.toggle('is-locked', !!m.locked);
+    entry.lockBtn.title = m.locked ? 'Unlock' : 'Lock in place';
+    entry.lockBtn.innerHTML = m.locked
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="0"><path d="M17 11V7a5 5 0 0 0-10 0v4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>';
+  });
+
+  // Remove rows no longer present
+  listRowNodes.forEach((entry, id) => {
+    if (!activeIds.has(id)) {
+      entry.root.remove();
+      listRowNodes.delete(id);
+    }
+  });
+
+  // Ensure clear-all button
+  if (!clearBtn) {
+    clearBtn = document.createElement('button');
+    clearBtn.className = 'clear-btn';
+    clearBtn.textContent = 'Clear all measurements';
+    clearBtn.addEventListener('click', () => clearAllMeasurements());
+    list.appendChild(clearBtn);
+  }
+}
+
+window.clearAllMeasurements = function() {
+  state.measurements = [];
+  labelNodes.forEach(entry => entry.root.remove());
+  labelNodes.clear();
+  updateMeasList();
+};
+
+/* ---------- Input handling ---------- */
+let isDragging = false;
+let isPanning = false;
+let lastX = 0, lastY = 0;
+
+mount.addEventListener('pointerdown', (e) => {
+  if (state.tool === 'measure') return;
+  isDragging = true;
+  isPanning = e.button === 1 || e.shiftKey;
+  lastX = e.clientX; lastY = e.clientY;
+  mount.classList.add('dragging');
+  mount.setPointerCapture(e.pointerId);
+});
+mount.addEventListener('pointermove', (e) => {
+  if (state.tool === 'measure') {
+    const rect = renderer.domElement.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    let best = null, bestDist = 22;
+    snapPoints.forEach((p) => {
+      const sp = projectToScreen(p);
+      if (!sp || sp.z > 1 || sp.z < -1) return;
+      const d = Math.hypot(sp.x - px, sp.y - py);
+      if (d < bestDist) { bestDist = d; best = { point: p, screen: sp }; }
+    });
+    state.hoverSnap = best;
+  }
+  if (!isDragging) return;
+  const dx = e.clientX - lastX;
+  const dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  if (isPanning) {
+    sceneState.targetPanX -= dx * 0.01 * (sceneState.distance / 8);
+    sceneState.targetPanY += dy * 0.01 * (sceneState.distance / 8);
+  } else {
+    sceneState.targetRotY += dx * 0.005;
+    sceneState.targetRotX += dy * 0.005;
+    sceneState.targetRotX = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, sceneState.targetRotX));
+  }
+});
+mount.addEventListener('pointerup', (e) => {
+  isDragging = false; isPanning = false;
+  mount.classList.remove('dragging');
+  try { mount.releasePointerCapture(e.pointerId); } catch (err) {}
+});
+mount.addEventListener('pointercancel', (e) => {
+  isDragging = false; isPanning = false;
+  mount.classList.remove('dragging');
+});
+
+mount.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (e.ctrlKey || e.metaKey) {
+    sceneState.targetDistance *= 1 + e.deltaY * 0.01;
+    sceneState.targetDistance = Math.max(1, Math.min(40, sceneState.targetDistance));
+  } else if (e.shiftKey) {
+    sceneState.targetPanX -= e.deltaX * 0.005 * (sceneState.distance / 8);
+    sceneState.targetPanY += e.deltaY * 0.005 * (sceneState.distance / 8);
+  } else {
+    sceneState.targetRotY += e.deltaX * 0.003;
+    sceneState.targetRotX += e.deltaY * 0.003;
+    sceneState.targetRotX = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, sceneState.targetRotX));
+  }
+}, { passive: false });
+
+mount.addEventListener('click', (e) => {
+  if (state.tool !== 'measure') return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  let best = null, bestDist = 30;
+  snapPoints.forEach((p) => {
+    const sp = projectToScreen(p);
+    if (!sp || sp.z > 1) return;
+    const d = Math.hypot(sp.x - px, sp.y - py);
+    if (d < bestDist) { bestDist = d; best = p; }
+  });
+  if (!best) { showToast('No snap point nearby — hover near a vertex or face center'); return; }
+  if (!state.pendingPoint) {
+    state.pendingPoint = best;
+  } else {
+    // Apply the geometry's scaleFactor so the displayed distance is in the
+    // original file units, not the internally-normalized coordinates.
+    const sf = mesh.geometry.userData.scaleFactor || 1;
+    const dist = state.pendingPoint.distanceTo(best) * sf;
+    state.measurements.push({
+      id: Date.now() + Math.random(),
+      p1: state.pendingPoint.clone(),
+      p2: best.clone(),
+      dist, locked: false,
+      name: '',
+    });
+    state.pendingPoint = null;
+    showToast(`Measured: ${dist.toFixed(2)} ${state.units}`);
+    updateMeasList();
+  }
+});
+
+/* ---------- UI wiring ---------- */
+function setTool(tool) {
+  state.tool = tool;
+  state.pendingPoint = null;
+  document.getElementById('tool-orbit').classList.toggle('active', tool === 'orbit');
+  document.getElementById('tool-measure').classList.toggle('active', tool === 'measure');
+  mount.classList.toggle('measuring', tool === 'measure');
+  const icon = tool === 'measure'
+    ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0066FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.3 8.7L8.7 21.3a2.4 2.4 0 0 1-3.4 0L2.7 18.7a2.4 2.4 0 0 1 0-3.4L15.3 2.7a2.4 2.4 0 0 1 3.4 0l2.6 2.6a2.4 2.4 0 0 1 0 3.4z"/></svg>'
+    : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0066FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h-2l5 -5l5 5h-2v4l-4 0z"/><path d="M17 5v-2l5 5l-5 5v-2h-4l0 -4z"/><path d="M19 17h2l-5 5l-5 -5h2v-4l4 0z"/><path d="M7 19v2l-5 -5l5 -5v2h4l0 4z"/></svg>';
+  document.getElementById('hud-tool').innerHTML = icon + (tool === 'measure' ? ' Measure' : ' Orbit');
+  document.getElementById('hud-hint').textContent = tool === 'measure'
+    ? (state.pendingPoint ? 'Click second snap point' : 'Click first snap point')
+    : '';
+}
+
+document.getElementById('tool-orbit').addEventListener('click', () => setTool('orbit'));
+document.getElementById('tool-measure').addEventListener('click', () => setTool('measure'));
+
+document.getElementById('tool-section').addEventListener('click', () => {
+  state.sectionEnabled = !state.sectionEnabled;
+  document.getElementById('tool-section').classList.toggle('active', state.sectionEnabled);
+  document.getElementById('section-panel').style.display = state.sectionEnabled ? 'block' : 'none';
+  applySectionState();
+});
+
+function applySectionState() {
+  if (!mesh) return;
+  mesh.material.clippingPlanes = state.sectionEnabled ? [clipPlane] : [];
+  wireframe.material.clippingPlanes = state.sectionEnabled ? [clipPlane] : [];
+  mesh.material.needsUpdate = true;
+  wireframe.material.needsUpdate = true;
+  sectionWire.visible = state.sectionEnabled;
+  updateClipPlane();
+}
+
+function updateClipPlane() {
+  const normals = {
+    x: new THREE.Vector3(-1, 0, 0),
+    y: new THREE.Vector3(0, -1, 0),
+    z: new THREE.Vector3(0, 0, -1),
+  };
+  clipPlane.normal.copy(normals[state.sectionAxis]);
+  clipPlane.constant = state.sectionPos;
+}
+
+document.querySelectorAll('.axis-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.sectionAxis = btn.dataset.axis;
+    document.querySelectorAll('.axis-btn').forEach(b => b.classList.toggle('active', b === btn));
+    updateSectionBounds();
+    updateClipPlane();
+  });
+});
+
+document.getElementById('section-slider').addEventListener('input', (e) => {
+  state.sectionPos = parseFloat(e.target.value);
+  if (!mesh) return;
+  const sf = mesh.geometry.userData.scaleFactor || 1;
+  document.getElementById('section-val').textContent = `${(state.sectionPos * sf).toFixed(2)} ${state.units}`;
+  updateClipPlane();
+});
+
+document.getElementById('tool-wireframe').addEventListener('click', () => {
+  state.showWireframe = !state.showWireframe;
+  document.getElementById('tool-wireframe').classList.toggle('active', state.showWireframe);
+  if (!wireframe) return;
+  wireframe.material.opacity = state.showWireframe ? 0.85 : 0.12;
+  wireframe.material.needsUpdate = true;
+});
+
+document.getElementById('tool-grid').addEventListener('click', () => {
+  state.showGrid = !state.showGrid;
+  document.getElementById('tool-grid').classList.toggle('active', state.showGrid);
+  if (state.showGrid && !gridHelper && mesh) {
+    gridHelper = new THREE.GridHelper(20, 40, 0x0066ff, 0x333333);
+    gridHelper.position.y = mesh.geometry.boundingBox.min.y - 0.01;
+    gridHelper.material.opacity = 0.18;
+    gridHelper.material.transparent = true;
+    scene.add(gridHelper);
+  } else if (!state.showGrid && gridHelper) {
+    scene.remove(gridHelper); gridHelper = null;
+  }
+});
+
+document.getElementById('tool-rotate').addEventListener('click', () => {
+  state.autoRotate = !state.autoRotate;
+  document.getElementById('tool-rotate').classList.toggle('active', state.autoRotate);
+});
+
+document.querySelectorAll('.view-btn[data-view]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const v = btn.dataset.view;
+    const views = {
+      front: [0, 0], back: [0, Math.PI],
+      left: [0, -Math.PI / 2], right: [0, Math.PI / 2],
+      top: [Math.PI / 2 - 0.05, 0], bottom: [-Math.PI / 2 + 0.05, 0],
+      iso: [Math.PI / 6, Math.PI / 4],
+    };
+    sceneState.targetRotX = views[v][0];
+    sceneState.targetRotY = views[v][1];
+    sceneState.targetPanX = 0; sceneState.targetPanY = 0;
+  });
+});
+
+document.getElementById('btn-fit').addEventListener('click', () => {
+  if (!mesh) return;
+  const bs = mesh.geometry.boundingSphere;
+  sceneState.targetDistance = Math.max(5, bs.radius * 3.5);
+  sceneState.targetPanX = 0; sceneState.targetPanY = 0;
+});
+
+document.getElementById('zoom-in').addEventListener('click', () => {
+  sceneState.targetDistance = Math.max(1, sceneState.targetDistance * 0.85);
+});
+document.getElementById('zoom-out').addEventListener('click', () => {
+  sceneState.targetDistance = Math.min(40, sceneState.targetDistance * 1.18);
+});
+
+/* ============================================================
+   FILE UPLOAD — multi-file library + drag & drop
+   ============================================================ */
+
+const fileInput = document.getElementById('file-input');
+const dropzone = document.getElementById('dropzone');
+const parseLoader = document.getElementById('parse-loader');
+const modalBackdrop = document.getElementById('modal-backdrop');
+const modalTitle = document.getElementById('modal-title');
+const modalBody = document.getElementById('modal-body');
+const modalActions = document.getElementById('modal-actions');
+
+const partsDropdown = document.getElementById('parts-dropdown');
+const partsTrigger = document.getElementById('parts-trigger');
+const partsCurrent = document.getElementById('parts-current');
+const partsMenu = document.getElementById('parts-menu');
+const colorSwatches = document.getElementById('color-swatches');
+
+// Note: the Upload button and "Choose file" empty-state button are now
+// <label for="file-input"> elements. Tapping them opens the file picker
+// natively because of the label-input association — no JS click forwarding
+// needed. This is the only reliable way on iOS Safari, where programmatic
+// .click() on a hidden file input is sometimes silently blocked.
+
+fileInput.addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  fileInput.value = ''; // allow re-uploading same name
+  // Sequential processing — WASM initialization serializes anyway and this
+  // gives cleaner progress UI than racing many files in parallel.
+  for (const file of files) {
+    await handleUploadedFile(file);
+  }
+});
+
+// Drag & drop — window-wide dropzone
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => {
+  if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) {
+    e.preventDefault();
+    dragDepth++;
+    dropzone.classList.add('active');
+  }
+});
+window.addEventListener('dragleave', (e) => {
+  dragDepth--;
+  if (dragDepth <= 0) {
+    dragDepth = 0;
+    dropzone.classList.remove('active');
+  }
+});
+window.addEventListener('dragover', (e) => {
+  if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) {
+    e.preventDefault();
+  }
+});
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropzone.classList.remove('active');
+  const files = Array.from(e.dataTransfer.files || []);
+  for (const file of files) {
+    await handleUploadedFile(file);
+  }
+});
+
+// Default color palette — cycled through for new parts so each part has a
+// different tint out of the box. User can override per-part.
+const DEFAULT_COLORS = ['#c8ccd2', '#6d7079', '#b08968', '#ffd447', '#0066ff', '#e85d3b'];
+
+async function handleUploadedFile(file) {
+  parseLoader.classList.add('active');
+  parseLoader.textContent = `Reading ${file.name}…`;
+  await new Promise(r => requestAnimationFrame(r));
+
+  const onProgress = (msg) => { parseLoader.textContent = msg; };
+
+  try {
+    const { geom, format } = await parseFile(file, onProgress);
+    onProgress('Processing geometry…');
+    await new Promise(r => requestAnimationFrame(r));
+    const processed = postProcessGeometry(geom, { center: true, normalize: true });
+    const triCount = Math.floor(processed.attributes.position.count / 3);
+
+    // Build the part record
+    const dot = file.name.lastIndexOf('.');
+    const baseName = dot > 0 ? file.name.slice(0, dot) : file.name;
+    const id = Date.now() + Math.random();
+    const colorIdx = state.parts.length % DEFAULT_COLORS.length;
+    const part = {
+      id,
+      name: baseName,
+      filename: file.name,
+      format,
+      geom: processed,
+      color: DEFAULT_COLORS[colorIdx],
+      measurements: [],
+      autoMeasurements: [], // computed lazily in rebuildMesh
+      snapPoints: null,
+      uploadedAt: Date.now(),
+      triCount,
+    };
+    state.parts.push(part);
+    state.activePartId = id;
+
+    // Sync the editable part-name field
+    const partNameInput = document.getElementById('part-name');
+    if (partNameInput) partNameInput.value = part.name;
+
+    rebuildMesh();
+    parseLoader.classList.remove('active');
+    showToast(`Loaded ${format} · ${triCount.toLocaleString()} triangles`);
+  } catch (err) {
+    parseLoader.classList.remove('active');
+    console.error('Upload error:', err);
+    const msg = err && err.message ? err.message : String(err);
+    if (msg.includes('occt-import-js') || msg.includes('STEP engine')) {
+      showParseErrorModal('STEP parser unavailable', msg, file.name);
+    } else {
+      showParseErrorModal('Could not open file', msg, file.name);
+    }
+  }
+}
+
+/* --- Parts dropdown --- */
+
+function updatePartsDropdown() {
+  const part = activePart();
+  if (!part) {
+    partsDropdown.style.display = 'none';
+    return;
+  }
+  partsDropdown.style.display = '';
+  const label = part.name + (part.format ? ` · ${part.format}` : '');
+  partsCurrent.textContent = label;
+
+  // Build the menu
+  partsMenu.innerHTML = '';
+  state.parts.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'parts-item' + (p.id === state.activePartId ? ' active' : '');
+
+    const sw = document.createElement('div');
+    sw.className = 'parts-item-swatch';
+    sw.style.background = p.color;
+
+    const body = document.createElement('div');
+    body.className = 'parts-item-body';
+    const name = document.createElement('div');
+    name.className = 'parts-name';
+    name.textContent = p.name;
+    const meta = document.createElement('div');
+    meta.className = 'parts-meta';
+    meta.textContent = `${p.format} · ${p.triCount.toLocaleString()} triangles`;
+    body.appendChild(name);
+    body.appendChild(meta);
+
+    // Switch active part on click
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.parts-delete')) return;
+      if (p.id !== state.activePartId) {
+        state.activePartId = p.id;
+        const partNameInput = document.getElementById('part-name');
+        if (partNameInput) partNameInput.value = p.name;
+        rebuildMesh();
+      }
+      closePartsMenu();
+    });
+
+    const del = document.createElement('button');
+    del.className = 'parts-delete';
+    del.title = `Remove ${p.name}`;
+    del.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removePart(p.id);
+    });
+
+    item.appendChild(sw);
+    item.appendChild(body);
+    item.appendChild(del);
+    partsMenu.appendChild(item);
+  });
+
+  // Footer action
+  const actions = document.createElement('div');
+  actions.className = 'parts-menu-actions';
+  // Use a label here too so it tap-opens the file picker on iOS Safari
+  // without relying on programmatic .click() which iOS sometimes blocks.
+  const addBtn = document.createElement('label');
+  addBtn.className = 'parts-menu-action';
+  addBtn.htmlFor = 'file-input';
+  addBtn.style.cursor = 'pointer';
+  addBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add more files';
+  // Closing the menu is handled on click, before the label opens the picker
+  addBtn.addEventListener('click', () => {
+    closePartsMenu();
+    // No fileInput.click() — the label triggers it natively
+  });
+  actions.appendChild(addBtn);
+  partsMenu.appendChild(actions);
+}
+
+function removePart(id) {
+  const idx = state.parts.findIndex(p => p.id === id);
+  if (idx < 0) return;
+  const wasActive = id === state.activePartId;
+  // Dispose the geometry to free GPU/CPU memory
+  const p = state.parts[idx];
+  if (p.geom && p.geom.dispose) p.geom.dispose();
+  state.parts.splice(idx, 1);
+  if (wasActive) {
+    // pick the next part, or the previous, or null
+    if (state.parts.length > 0) {
+      state.activePartId = state.parts[Math.min(idx, state.parts.length - 1)].id;
+      const next = activePart();
+      const partNameInput = document.getElementById('part-name');
+      if (partNameInput) partNameInput.value = next.name;
+    } else {
+      state.activePartId = null;
+    }
+    rebuildMesh();
+  } else {
+    updatePartsDropdown();
+  }
+  showToast('Part removed');
+}
+
+// Dropdown open/close
+partsTrigger.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (partsMenu.classList.contains('open')) closePartsMenu();
+  else openPartsMenu();
+});
+function openPartsMenu() {
+  updatePartsDropdown();
+  partsMenu.classList.add('open');
+}
+function closePartsMenu() {
+  partsMenu.classList.remove('open');
+}
+document.addEventListener('click', (e) => {
+  if (!partsDropdown.contains(e.target)) closePartsMenu();
+});
+
+/* --- Color swatches --- */
+
+function updateColorSwatches() {
+  const part = activePart();
+  if (!part) {
+    colorSwatches.style.display = 'none';
+    return;
+  }
+  colorSwatches.style.display = '';
+  // Highlight whichever preset matches current color; otherwise none.
+  const current = part.color.toLowerCase();
+  document.querySelectorAll('.swatch[data-color]').forEach(sw => {
+    sw.classList.toggle('active', sw.dataset.color.toLowerCase() === current);
+  });
+  // Sync custom-color input
+  document.getElementById('custom-color').value = current;
+}
+
+document.querySelectorAll('.swatch[data-color]').forEach(sw => {
+  sw.addEventListener('click', () => {
+    setPartColor(sw.dataset.color);
+  });
+});
+
+document.getElementById('custom-color').addEventListener('input', (e) => {
+  setPartColor(e.target.value);
+});
+
+function setPartColor(color) {
+  const part = activePart();
+  if (!part) return;
+  part.color = color;
+  if (mesh && mesh.material) {
+    mesh.material.color = new THREE.Color(color);
+    mesh.material.needsUpdate = true;
+  }
+  updateColorSwatches();
+  updatePartsDropdown();
+}
+
+function showParseErrorModal(title, message, filename) {
+  modalTitle.textContent = title;
+  modalBody.innerHTML = `
+    <p style="margin-bottom:12px;"><strong style="color:var(--text);">${escapeHtml(filename)}</strong></p>
+    <p style="margin-bottom:10px;">${escapeHtml(message)}</p>
+    <p style="font-size:12px; color:var(--text-dim); margin-top:14px;">
+      If the problem persists, try re-exporting the file from your CAD tool,
+      or converting to STL/OBJ.
+    </p>
+  `;
+  modalActions.innerHTML = '<button class="modal-btn secondary" id="modal-close">Got it</button>';
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  modalBackdrop.classList.add('active');
+}
+
+function closeModal() { modalBackdrop.classList.remove('active'); }
+modalBackdrop.addEventListener('click', (e) => {
+  if (e.target === modalBackdrop) closeModal();
+});
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.getElementById('unit-select').addEventListener('change', (e) => {
+  state.units = e.target.value;
+  updateBoundingBox();
+  updateMeasList();
+  updateFeaturesList();
+  const sf = mesh && mesh.geometry ? (mesh.geometry.userData.scaleFactor || 1) : 1;
+  document.getElementById('section-val').textContent = `${(state.sectionPos * sf).toFixed(2)} ${state.units}`;
+});
+
+document.getElementById('part-name').addEventListener('input', (e) => {
+  state.partName = e.target.value;
+  updatePartsDropdown();
+});
+
+document.getElementById('theme-btn').addEventListener('click', () => {
+  state.theme = state.theme === 'dark' ? 'light' : 'dark';
+  document.body.classList.toggle('light', state.theme === 'light');
+});
+
+document.getElementById('tool-screenshot').addEventListener('click', screenshot);
+document.getElementById('tool-report').addEventListener('click', generateReport);
+document.getElementById('btn-export').addEventListener('click', generateReport);
+
+/* ---------- Toast ---------- */
+let toastTimer;
+function showToast(msg) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.getElementById('app').appendChild(el);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.remove(), 2200);
+}
+
+/* ---------- Screenshot ---------- */
+async function captureFrame() {
+  renderer.render(scene, camera);
+  const webglCanvas = renderer.domElement;
+  const rect = webglCanvas.getBoundingClientRect();
+  const W = webglCanvas.width, H = webglCanvas.height;
+  const out = document.createElement('canvas');
+  out.width = W; out.height = H;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = state.theme === 'dark' ? '#0A0A0B' : '#FAFAFA';
+  ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(webglCanvas, 0, 0, W, H);
+
+  const dpr = W / rect.width;
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  state.measurements.forEach(m => {
+    const a = projectToScreen(m.p1);
+    const b = projectToScreen(m.p2);
+    if (!a || !b || a.z > 1 || b.z > 1) return;
+    ctx.strokeStyle = BRAND.blue;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.setLineDash([]);
+    [a, b].forEach(p => {
+      ctx.fillStyle = BRAND.blue;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.stroke();
+    });
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const label = `${m.dist.toFixed(2)} ${state.units}`;
+    ctx.font = '600 12px -apple-system, system-ui, sans-serif';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = BRAND.blue;
+    const padX = 8, padY = 4;
+    const rx = mx - tw / 2 - padX, ry = my - 8 - padY;
+    const rw = tw + padX * 2, rh = 16 + padY * 2, r = 4;
+    ctx.beginPath();
+    ctx.moveTo(rx + r, ry);
+    ctx.arcTo(rx + rw, ry, rx + rw, ry + rh, r);
+    ctx.arcTo(rx + rw, ry + rh, rx, ry + rh, r);
+    ctx.arcTo(rx, ry + rh, rx, ry, r);
+    ctx.arcTo(rx, ry, rx + rw, ry, r);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, mx, my + 1);
+  });
+  ctx.restore();
+  return out;
+}
+
+async function screenshot() {
+  const canvas = await captureFrame();
+  canvas.toBlob((blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${state.partName}-${Date.now()}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Screenshot saved');
+  }, 'image/png');
+}
+
+/* ============================================================
+   PDF REPORT GENERATION
+   Clean from-scratch implementation with proper byte handling
+   ============================================================ */
+
+// Encode a string as Latin-1 bytes (for PDF ASCII content)
+function strToBytes(str) {
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i) & 0xFF;
+  return bytes;
+}
+
+// Convert a canvas to JPEG bytes
+function canvasToJpegBytes(canvas, quality = 0.85) {
+  return new Promise((resolve) => {
+    canvas.toBlob(async (blob) => {
+      const buf = await blob.arrayBuffer();
+      resolve(new Uint8Array(buf));
+    }, 'image/jpeg', quality);
+  });
+}
+
+// Escape special PDF characters
+function escapePdfText(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+async function generateReport() {
+  const btn = document.getElementById('btn-export');
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  showToast('Capturing views…');
+
+  try {
+    // Snapshot 4 angles — snap camera instantly (no easing)
+    const original = {
+      rx: sceneState.rotX, ry: sceneState.rotY,
+      trx: sceneState.targetRotX, try_: sceneState.targetRotY,
+      d: sceneState.distance, td: sceneState.targetDistance,
+      px: sceneState.panX, py: sceneState.panY,
+      tpx: sceneState.targetPanX, tpy: sceneState.targetPanY,
+    };
+    const originalAuto = state.autoRotate;
+    state.autoRotate = false;
+
+    const angles = [
+      { name: 'Isometric', rx: Math.PI / 6, ry: Math.PI / 4 },
+      { name: 'Front',     rx: 0,           ry: 0 },
+      { name: 'Top',       rx: Math.PI / 2 - 0.05, ry: 0 },
+      { name: 'Right',     rx: 0,           ry: Math.PI / 2 },
+    ];
+
+    const shots = [];
+    for (const a of angles) {
+      // Set both current and target so easing doesn't drift
+      sceneState.rotX = a.rx;  sceneState.targetRotX = a.rx;
+      sceneState.rotY = a.ry;  sceneState.targetRotY = a.ry;
+      sceneState.panX = 0;     sceneState.targetPanX = 0;
+      sceneState.panY = 0;     sceneState.targetPanY = 0;
+      // wait for next frame so camera updates
+      await new Promise(r => requestAnimationFrame(r));
+      await new Promise(r => requestAnimationFrame(r));
+      const canvas = await captureFrame();
+      // Keep PDF images high-resolution — 1600px wide target.
+      // The capture canvas is already at devicePixelRatio * viewport size, so
+      // just clamp the max dim rather than downsizing aggressively.
+      const maxW = 1600;
+      let scaled = canvas;
+      if (canvas.width > maxW) {
+        scaled = document.createElement('canvas');
+        const scale = maxW / canvas.width;
+        scaled.width = Math.round(canvas.width * scale);
+        scaled.height = Math.round(canvas.height * scale);
+        const sctx = scaled.getContext('2d');
+        sctx.imageSmoothingQuality = 'high';
+        sctx.fillStyle = '#0A0A0B';
+        sctx.fillRect(0, 0, scaled.width, scaled.height);
+        sctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
+      }
+      const jpegBytes = await canvasToJpegBytes(scaled, 0.9);
+      shots.push({ name: a.name, bytes: jpegBytes, w: scaled.width, h: scaled.height });
+    }
+
+    // Restore
+    Object.assign(sceneState, {
+      rotX: original.rx, rotY: original.ry,
+      targetRotX: original.trx, targetRotY: original.try_,
+      distance: original.d, targetDistance: original.td,
+      panX: original.px, panY: original.py,
+      targetPanX: original.tpx, targetPanY: original.tpy,
+    });
+    state.autoRotate = originalAuto;
+
+    // Bounding dimensions
+    const bb = mesh.geometry.boundingBox;
+    const dims = {
+      width: (bb.max.x - bb.min.x).toFixed(2),
+      height: (bb.max.y - bb.min.y).toFixed(2),
+      depth: (bb.max.z - bb.min.z).toFixed(2),
+    };
+
+    // Build PDF
+    showToast('Building PDF…');
+    const pdfBytes = buildPDF(shots, dims);
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Imaginarium_${state.partName}_Report.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('Report exported');
+  } catch (err) {
+    console.error('Report error:', err);
+    showToast('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg> Export PDF Report';
+  }
+}
+
+/**
+ * Build a PDF from scratch. Returns Uint8Array.
+ *
+ * Layout:
+ *   Page 1: Cover + Isometric view (large) + bounding dims + user measurements list
+ *   Page 2: Front / Top / Right orthographic views, large with captions below
+ *
+ * Object numbering:
+ *   1 Catalog, 2 Pages, 3 Page1, 4 Page2, 5 F1, 6 F2,
+ *   7 Content1, 8 Content2, 9..N Images
+ */
+function buildPDF(shots, dims) {
+  const pageW = 595, pageH = 842; // A4 portrait (points)
+  const pad = 42;
+  const fmt = (n) => Number(n).toFixed(2);
+
+  // Helper: page header (the blue band with IMAGINARIUM title)
+  const headerOps = (pageLabel) => {
+    let c = '';
+    // Background
+    c += '0.04 0.04 0.04 rg\n';
+    c += `0 0 ${pageW} ${pageH} re f\n`;
+    // Header band
+    c += '0 0.4 1 rg\n';
+    c += `0 ${pageH - 70} ${pageW} 70 re f\n`;
+    // Logo dot
+    c += '1 1 1 rg\n';
+    c += `q 1 0 0 1 ${pad} ${pageH - 40} cm\n`;
+    c += '0 7 m 3.87 7 7 3.87 7 0 c 7 -3.87 3.87 -7 0 -7 c -3.87 -7 -7 -3.87 -7 0 c -7 3.87 -3.87 7 0 7 c f\nQ\n';
+    // Title
+    c += `BT 1 1 1 rg /F2 20 Tf ${pad + 18} ${pageH - 38} Td (IMAGINARIUM) Tj ET\n`;
+    c += `BT 0.85 0.9 1 rg /F1 9 Tf ${pad + 18} ${pageH - 52} Td (Part Inspection Report) Tj ET\n`;
+    // Page label on right
+    c += `BT 0.85 0.9 1 rg /F1 9 Tf ${pageW - pad - 60} ${pageH - 45} Td (${escapePdfText(pageLabel)}) Tj ET\n`;
+    return c;
+  };
+
+  // Helper: footer
+  const footerOps = (pageNum, pageTotal) => {
+    let c = '';
+    c += `BT 0.4 0.4 0.45 rg /F1 7 Tf ${pad} 24 Td (IMAGINARIUM CAD VIEWER) Tj ET\n`;
+    c += `BT 0.4 0.4 0.45 rg /F1 7 Tf ${pageW - pad - 50} 24 Td (PAGE ${pageNum} OF ${pageTotal}) Tj ET\n`;
+    return c;
+  };
+
+  // Helper: draw an image cell with caption below
+  // Returns { bottomY }
+  const imageCell = (imgIdx, img, x, y, w, h, caption) => {
+    let c = '';
+    const captionHeight = 22;
+    const imgH = h - captionHeight;
+    // Image border
+    c += '0 0.4 1 RG 0.4 w\n';
+    c += `${fmt(x)} ${fmt(y + captionHeight)} ${fmt(w)} ${fmt(imgH)} re S\n`;
+    // Fit image preserving aspect
+    const ar = img.w / img.h;
+    let iw = w - 4, ih = iw / ar;
+    if (ih > imgH - 4) { ih = imgH - 4; iw = ih * ar; }
+    const ix = x + (w - iw) / 2;
+    const iy = y + captionHeight + (imgH - ih) / 2;
+    c += `q ${fmt(iw)} 0 0 ${fmt(ih)} ${fmt(ix)} ${fmt(iy)} cm /Im${imgIdx} Do Q\n`;
+    // Caption below image — blue bar with white text
+    c += '0 0.4 1 rg\n';
+    c += `${fmt(x)} ${fmt(y)} ${fmt(w)} ${fmt(captionHeight - 2)} re f\n`;
+    c += `BT 1 1 1 rg /F2 10 Tf ${fmt(x + 10)} ${fmt(y + 6)} Td (${escapePdfText(caption.toUpperCase())}) Tj ET\n`;
+    return c;
+  };
+
+  /* ============ PAGE 1: Cover + Isometric ============ */
+  let c1 = headerOps('VIEW 1 / 3 — OVERVIEW');
+
+  // Part meta block
+  const sourceLabel = state.uploadedName
+    ? `Uploaded file: ${state.uploadedName} (${state.uploadedFormat || '—'})`
+    : 'Untitled part';
+
+  c1 += `BT 1 1 1 rg /F2 17 Tf ${pad} ${pageH - 100} Td (${escapePdfText(state.partName)}) Tj ET\n`;
+  c1 += `BT 0.55 0.55 0.6 rg /F1 9 Tf ${pad} ${pageH - 116} Td (Generated ${escapePdfText(new Date().toLocaleString())}) Tj ET\n`;
+  c1 += `BT 0.55 0.55 0.6 rg /F1 9 Tf ${pad} ${pageH - 130} Td (${escapePdfText(sourceLabel)}   /   Units: ${escapePdfText(state.units)}) Tj ET\n`;
+
+  // Large isometric image
+  const isoShot = shots.find(s => s.name === 'Isometric') || shots[0];
+  const isoIdx = shots.indexOf(isoShot);
+  const isoW = pageW - pad * 2;
+  const isoH = 380;
+  const isoY = pageH - 160 - isoH;
+  c1 += imageCell(isoIdx, isoShot, pad, isoY, isoW, isoH, 'Isometric View');
+
+  // Bounding dimensions box
+  const dimBoxY = isoY - 130;
+  const dimBoxH = 105;
+  c1 += '0.06 0.06 0.07 rg\n';
+  c1 += `${pad} ${dimBoxY} ${pageW - pad * 2} ${dimBoxH} re f\n`;
+  c1 += '0 0.4 1 RG 0.5 w\n';
+  c1 += `${pad} ${dimBoxY} ${pageW - pad * 2} ${dimBoxH} re S\n`;
+  c1 += `BT 0 0.4 1 rg /F2 10 Tf ${pad + 14} ${dimBoxY + dimBoxH - 20} Td (BOUNDING DIMENSIONS) Tj ET\n`;
+
+  const labels = [
+    { label: 'Width (X-axis)',  val: dims.width,  x: pad + 14 },
+    { label: 'Height (Y-axis)', val: dims.height, x: pad + 175 },
+    { label: 'Depth (Z-axis)',  val: dims.depth,  x: pad + 336 },
+  ];
+  labels.forEach(l => {
+    c1 += `BT 0.7 0.72 0.77 rg /F1 9 Tf ${l.x} ${dimBoxY + 52} Td (${escapePdfText(l.label)}) Tj ET\n`;
+    c1 += `BT 1 1 1 rg /F2 18 Tf ${l.x} ${dimBoxY + 28} Td (${l.val} ${state.units}) Tj ET\n`;
+  });
+
+  c1 += footerOps(1, 3);
+
+  /* ============ PAGE 2: Orthographic Views ============ */
+  let c2 = headerOps('VIEW 2 / 3 — ORTHOGRAPHIC');
+
+  // Three large ortho views stacked vertically
+  const orthoNames = ['Front', 'Top', 'Right'];
+  const orthoShots = orthoNames.map(n => {
+    const s = shots.find(x => x.name === n);
+    return { shot: s, idx: shots.indexOf(s) };
+  }).filter(x => x.shot);
+
+  const orthoTopY = pageH - 95;
+  const orthoH = (orthoTopY - 60) / 3 - 14; // 60 = footer margin; 14 = gap
+  orthoShots.forEach((o, i) => {
+    const y = orthoTopY - (i + 1) * orthoH - i * 14;
+    c2 += imageCell(o.idx, o.shot, pad, y, pageW - pad * 2, orthoH, o.shot.name + ' View');
+  });
+
+  c2 += footerOps(2, 3);
+
+  /* ============ PAGE 3: Measurements & Features ============ */
+  let c3 = headerOps('VIEW 3 / 3 — MEASUREMENTS');
+
+  // Section title
+  c3 += `BT 1 1 1 rg /F2 17 Tf ${pad} ${pageH - 100} Td (${escapePdfText(state.partName)}) Tj ET\n`;
+  c3 += `BT 0.55 0.55 0.6 rg /F1 9 Tf ${pad} ${pageH - 116} Td (All dimensions — automatic + user-defined) Tj ET\n`;
+
+  let cy = pageH - 155;
+
+  /* --- Auto-detected features section --- */
+  const autoFeatures = state.autoMeasurements.filter(f => f.category !== 'bbox');
+  if (autoFeatures.length > 0) {
+    c3 += `BT 0 0.4 1 rg /F2 11 Tf ${pad} ${cy} Td (AUTO-DETECTED FEATURES) Tj ET\n`;
+    cy -= 8;
+    c3 += '0 0.4 1 RG 0.6 w\n';
+    c3 += `${pad} ${cy} m ${pad + 150} ${cy} l S\n`;
+    cy -= 18;
+
+    // Column headers
+    const colX = { name: pad + 4, cat: pad + 260, val: pageW - pad - 100 };
+    c3 += `BT 0.7 0.72 0.77 rg /F2 8 Tf ${colX.name} ${cy} Td (FEATURE) Tj ET\n`;
+    c3 += `BT 0.7 0.72 0.77 rg /F2 8 Tf ${colX.cat} ${cy} Td (TYPE) Tj ET\n`;
+    c3 += `BT 0.7 0.72 0.77 rg /F2 8 Tf ${colX.val} ${cy} Td (VALUE) Tj ET\n`;
+    cy -= 6;
+    c3 += '0.15 0.15 0.17 RG 0.5 w\n';
+    c3 += `${pad} ${cy} m ${pageW - pad} ${cy} l S\n`;
+    cy -= 14;
+
+    autoFeatures.forEach((f, i) => {
+      if (cy < 200) return; // leave room for user measurements
+      // Alternating row background
+      if (i % 2 === 0) {
+        c3 += '0.06 0.06 0.07 rg\n';
+        c3 += `${pad} ${cy - 4} ${pageW - pad * 2} 16 re f\n`;
+      }
+      const categoryLabel = (f.category || '').toUpperCase();
+      c3 += `BT 1 1 1 rg /F1 9 Tf ${colX.name} ${cy} Td (${escapePdfText(f.label)}) Tj ET\n`;
+      c3 += `BT 0.55 0.55 0.6 rg /F1 8 Tf ${colX.cat} ${cy} Td (${escapePdfText(categoryLabel)}) Tj ET\n`;
+      c3 += `BT 0 0.4 1 rg /F2 10 Tf ${colX.val} ${cy} Td (${f.value.toFixed(2)} ${state.units}) Tj ET\n`;
+      cy -= 16;
+    });
+
+    cy -= 10; // gap before next section
+  }
+
+  /* --- User measurements section --- */
+  if (state.measurements.length > 0) {
+    c3 += `BT 0 0.4 1 rg /F2 11 Tf ${pad} ${cy} Td (USER MEASUREMENTS) Tj ET\n`;
+    cy -= 8;
+    c3 += '0 0.4 1 RG 0.6 w\n';
+    c3 += `${pad} ${cy} m ${pad + 150} ${cy} l S\n`;
+    cy -= 18;
+
+    const colX = { idx: pad + 4, name: pad + 50, val: pageW - pad - 100 };
+    c3 += `BT 0.7 0.72 0.77 rg /F2 8 Tf ${colX.idx} ${cy} Td (#) Tj ET\n`;
+    c3 += `BT 0.7 0.72 0.77 rg /F2 8 Tf ${colX.name} ${cy} Td (LABEL) Tj ET\n`;
+    c3 += `BT 0.7 0.72 0.77 rg /F2 8 Tf ${colX.val} ${cy} Td (VALUE) Tj ET\n`;
+    cy -= 6;
+    c3 += '0.15 0.15 0.17 RG 0.5 w\n';
+    c3 += `${pad} ${cy} m ${pageW - pad} ${cy} l S\n`;
+    cy -= 14;
+
+    for (let i = 0; i < state.measurements.length; i++) {
+      if (cy < 60) break;
+      const m = state.measurements[i];
+      const name = m.name && m.name.length > 0 ? m.name : '(unlabeled)';
+      const truncName = name.length > 60 ? name.substring(0, 57) + '...' : name;
+      const lockMarker = m.locked ? ' [locked]' : '';
+      if (i % 2 === 0) {
+        c3 += '0.06 0.06 0.07 rg\n';
+        c3 += `${pad} ${cy - 4} ${pageW - pad * 2} 16 re f\n`;
+      }
+      c3 += `BT 0.85 0.85 0.88 rg /F1 9 Tf ${colX.idx} ${cy} Td (M${i + 1}) Tj ET\n`;
+      c3 += `BT 1 1 1 rg /F1 9 Tf ${colX.name} ${cy} Td (${escapePdfText(truncName)}${escapePdfText(lockMarker)}) Tj ET\n`;
+      c3 += `BT 0 0.4 1 rg /F2 10 Tf ${colX.val} ${cy} Td (${m.dist.toFixed(2)} ${state.units}) Tj ET\n`;
+      cy -= 16;
+    }
+  } else if (autoFeatures.length === 0) {
+    c3 += `BT 0.55 0.55 0.6 rg /F1 10 Tf ${pad} ${cy - 20} Td (No user measurements recorded for this part.) Tj ET\n`;
+  }
+
+  c3 += footerOps(3, 3);
+
+  /* ============ Assemble ============ */
+  const content1Bytes = strToBytes(c1);
+  const content2Bytes = strToBytes(c2);
+  const content3Bytes = strToBytes(c3);
+
+  // Object IDs: 1 Cat, 2 Pages, 3 P1, 4 P2, 5 P3, 6 F1, 7 F2,
+  //             8 C1, 9 C2, 10 C3, 11..N Imgs
+  const imageStartId = 11;
+  const numObjects = imageStartId + shots.length - 1;
+
+  const parts = [];
+  let offset = 0;
+  const offsets = new Array(numObjects + 1).fill(0);
+  function write(str) {
+    const b = strToBytes(str);
+    parts.push(b);
+    offset += b.length;
+  }
+  function writeBytes(b) { parts.push(b); offset += b.length; }
+
+  write('%PDF-1.4\n');
+  write('%\xE2\xE3\xCF\xD3\n');
+
+  // 1: Catalog
+  offsets[1] = offset;
+  write('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+  // 2: Pages
+  offsets[2] = offset;
+  write('2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>\nendobj\n');
+
+  const xobjStr = shots.map((_, i) => `/Im${i} ${imageStartId + i} 0 R`).join(' ');
+
+  // 3: Page 1
+  offsets[3] = offset;
+  write(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Contents 8 0 R /Resources << /Font << /F1 6 0 R /F2 7 0 R >> /XObject << ${xobjStr} >> >> >>\nendobj\n`);
+
+  // 4: Page 2
+  offsets[4] = offset;
+  write(`4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Contents 9 0 R /Resources << /Font << /F1 6 0 R /F2 7 0 R >> /XObject << ${xobjStr} >> >> >>\nendobj\n`);
+
+  // 5: Page 3 (no images needed, but include XObject dict anyway for safety)
+  offsets[5] = offset;
+  write(`5 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Contents 10 0 R /Resources << /Font << /F1 6 0 R /F2 7 0 R >> >> >>\nendobj\n`);
+
+  // 6, 7: Fonts
+  offsets[6] = offset;
+  write('6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n');
+  offsets[7] = offset;
+  write('7 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj\n');
+
+  // 8: Content 1
+  offsets[8] = offset;
+  write(`8 0 obj\n<< /Length ${content1Bytes.length} >>\nstream\n`);
+  writeBytes(content1Bytes);
+  write('\nendstream\nendobj\n');
+
+  // 9: Content 2
+  offsets[9] = offset;
+  write(`9 0 obj\n<< /Length ${content2Bytes.length} >>\nstream\n`);
+  writeBytes(content2Bytes);
+  write('\nendstream\nendobj\n');
+
+  // 10: Content 3
+  offsets[10] = offset;
+  write(`10 0 obj\n<< /Length ${content3Bytes.length} >>\nstream\n`);
+  writeBytes(content3Bytes);
+  write('\nendstream\nendobj\n');
+
+  // 11..: Images
+  shots.forEach((s, i) => {
+    const id = imageStartId + i;
+    offsets[id] = offset;
+    write(`${id} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${s.w} /Height ${s.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${s.bytes.length} >>\nstream\n`);
+    writeBytes(s.bytes);
+    write('\nendstream\nendobj\n');
+  });
+
+  // xref
+  const xrefOffset = offset;
+  write(`xref\n0 ${numObjects + 1}\n`);
+  write('0000000000 65535 f \n');
+  for (let i = 1; i <= numObjects; i++) {
+    write(String(offsets[i]).padStart(10, '0') + ' 00000 n \n');
+  }
+  write(`trailer\n<< /Size ${numObjects + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+
+  let total = 0;
+  parts.forEach(p => total += p.length);
+  const out = new Uint8Array(total);
+  let pos = 0;
+  parts.forEach(p => { out.set(p, pos); pos += p.length; });
+  return out;
+}
+
+/* ============================================================
+   MOBILE BOTTOM SHEET + "MORE" SHEET
+   On phone, the right sidebar is a bottom sheet with three states:
+   - peek (default): only the summary bar shows above the fold
+   - half: sheet covers the lower half of the screen
+   - full: sheet covers most of the screen
+   The user can drag the handle, tap the summary, or tap a content
+   row to expand. Below 700px width these handlers attach; on
+   wider viewports the panel renders as a normal sidebar and the
+   sheet code stays inert because the elements are CSS-hidden.
+   ============================================================ */
+
+const isPhone = () => window.matchMedia('(max-width: 700px)').matches;
+
+const rightPanel = document.getElementById('right-panel');
+const sheetHandle = document.getElementById('sheet-handle');
+const sheetSummary = document.getElementById('sheet-summary');
+const sheetMeasCount = document.getElementById('sheet-meas-count');
+const sheetFeatureCount = document.getElementById('sheet-feature-count');
+
+function setSheetState(stateName) {
+  rightPanel.classList.remove('sheet-half', 'sheet-full');
+  if (stateName === 'half') rightPanel.classList.add('sheet-half');
+  else if (stateName === 'full') rightPanel.classList.add('sheet-full');
+}
+
+function getSheetState() {
+  if (rightPanel.classList.contains('sheet-full')) return 'full';
+  if (rightPanel.classList.contains('sheet-half')) return 'half';
+  return 'peek';
+}
+
+// Tap summary bar → cycle peek → half → full → peek
+sheetSummary.addEventListener('click', () => {
+  if (!isPhone()) return;
+  const cur = getSheetState();
+  if (cur === 'peek') setSheetState('half');
+  else if (cur === 'half') setSheetState('full');
+  else setSheetState('peek');
+});
+
+// Drag the sheet handle vertically to set state
+let sheetDragStartY = null;
+let sheetDragStartState = null;
+sheetHandle.addEventListener('pointerdown', (e) => {
+  if (!isPhone()) return;
+  sheetDragStartY = e.clientY;
+  sheetDragStartState = getSheetState();
+  try { sheetHandle.setPointerCapture(e.pointerId); } catch (err) {}
+  e.preventDefault();
+});
+sheetHandle.addEventListener('pointermove', (e) => {
+  if (sheetDragStartY == null) return;
+  const dy = e.clientY - sheetDragStartY;
+  const baseTranslate = {
+    peek: window.innerHeight - 60,
+    half: window.innerHeight * 0.45,
+    full: window.innerHeight * 0.08,
+  }[sheetDragStartState];
+  const proposed = Math.max(window.innerHeight * 0.08, Math.min(window.innerHeight - 60, baseTranslate + dy));
+  rightPanel.style.transition = 'none';
+  rightPanel.style.transform = `translateY(${proposed}px)`;
+});
+sheetHandle.addEventListener('pointerup', (e) => {
+  if (sheetDragStartY == null) return;
+  rightPanel.style.transition = '';
+  rightPanel.style.transform = '';
+  const dy = e.clientY - sheetDragStartY;
+  const cur = sheetDragStartState;
+  if (dy < -60) {
+    if (cur === 'peek') setSheetState('half');
+    else setSheetState('full');
+  } else if (dy > 60) {
+    if (cur === 'full') setSheetState('half');
+    else setSheetState('peek');
+  } else {
+    setSheetState(cur);
+  }
+  sheetDragStartY = null;
+  sheetDragStartState = null;
+});
+
+// Update the summary stats whenever measurement/feature counts change
+function updateSheetSummary() {
+  const m = (activePart() && activePart().measurements) || [];
+  const f = (activePart() && activePart().autoMeasurements) || [];
+  if (sheetMeasCount) sheetMeasCount.textContent = String(m.length);
+  if (sheetFeatureCount) sheetFeatureCount.textContent = String(f.length);
+}
+
+/* --- "More" sheet (mobile-only) --- */
+const moreSheet = document.getElementById('more-sheet');
+const moreBackdrop = document.getElementById('more-sheet-backdrop');
+const moreBtn = document.getElementById('more-btn');
+
+function openMoreSheet() {
+  moreSheet.classList.add('open');
+  moreBackdrop.classList.add('open');
+  syncMoreSheet();
+}
+function closeMoreSheet() {
+  moreSheet.classList.remove('open');
+  moreBackdrop.classList.remove('open');
+}
+
+moreBtn.addEventListener('click', openMoreSheet);
+moreBackdrop.addEventListener('click', closeMoreSheet);
+
+function syncMoreSheet() {
+  const part = activePart();
+  const moreName = document.getElementById('more-part-name');
+  if (moreName) moreName.value = part ? part.name : '';
+  document.getElementById('more-color-section').style.display = part ? '' : 'none';
+  if (part) {
+    document.querySelectorAll('#more-sheet .swatch[data-color]').forEach(sw => {
+      sw.classList.toggle('active', sw.dataset.color.toLowerCase() === part.color.toLowerCase());
+    });
+    document.getElementById('more-custom-color').value = part.color;
+  }
+  document.getElementById('more-wireframe').textContent = state.showWireframe ? 'On' : 'Off';
+  document.getElementById('more-wireframe').classList.toggle('active', state.showWireframe);
+  document.getElementById('more-grid').textContent = state.showGrid ? 'On' : 'Off';
+  document.getElementById('more-grid').classList.toggle('active', state.showGrid);
+  document.getElementById('more-rotate').textContent = state.autoRotate ? 'On' : 'Off';
+  document.getElementById('more-rotate').classList.toggle('active', state.autoRotate);
+  document.getElementById('more-theme').textContent = state.theme === 'dark' ? 'Dark' : 'Light';
+}
+
+document.getElementById('more-part-name').addEventListener('input', (e) => {
+  state.partName = e.target.value;
+  const top = document.getElementById('part-name');
+  if (top) top.value = e.target.value;
+  updatePartsDropdown();
+});
+document.querySelectorAll('#more-sheet .swatch[data-color]').forEach(sw => {
+  sw.addEventListener('click', () => {
+    setPartColor(sw.dataset.color);
+    syncMoreSheet();
+  });
+});
+document.getElementById('more-custom-color').addEventListener('input', (e) => {
+  setPartColor(e.target.value);
+});
+document.getElementById('more-wireframe').addEventListener('click', () => {
+  document.getElementById('tool-wireframe').click();
+  syncMoreSheet();
+});
+document.getElementById('more-grid').addEventListener('click', () => {
+  document.getElementById('tool-grid').click();
+  syncMoreSheet();
+});
+document.getElementById('more-rotate').addEventListener('click', () => {
+  document.getElementById('tool-rotate').click();
+  syncMoreSheet();
+});
+document.getElementById('more-theme').addEventListener('click', () => {
+  document.getElementById('theme-btn').click();
+  syncMoreSheet();
+});
+document.getElementById('more-screenshot').addEventListener('click', () => {
+  closeMoreSheet();
+  document.getElementById('tool-screenshot').click();
+});
+document.getElementById('more-pdf').addEventListener('click', () => {
+  closeMoreSheet();
+  document.getElementById('btn-export').click();
+});
+
+// Hook into measurement/feature updates so the summary stays current
+const _origUpdateMeasList = updateMeasList;
+updateMeasList = function() { _origUpdateMeasList.apply(this, arguments); updateSheetSummary(); };
+const _origUpdateFeaturesList = updateFeaturesList;
+updateFeaturesList = function() { _origUpdateFeaturesList.apply(this, arguments); updateSheetSummary(); };
+
+/* ---------- Boot ---------- */
+initThree();
+updateMeasList();
+updateFeaturesList();
+updateBoundingBox();
+updateEmptyState();
+updatePartsDropdown();
+updateColorSwatches();
+updateSheetSummary();
+setTool('orbit');
+</script>
+
+</body>
+</html>
